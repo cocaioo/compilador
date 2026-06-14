@@ -243,3 +243,22 @@ def test_lexer(source_code):
 
     for token in lexer:
         print(token)
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print("Uso: python src/frontend/lexer.py <caminho_do_arquivo.jss>")
+        sys.exit(1)
+
+    file_path = sys.argv[1]
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        print(f"--- Tokens de: {file_path} ---")
+        test_lexer(content)
+    except LexicalError as e:
+        print(f"Erro Lexico: {e}")
+    except FileNotFoundError:
+        print(f"Erro: Arquivo '{file_path}' nao encontrado.")
+
