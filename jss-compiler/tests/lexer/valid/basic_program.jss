@@ -1,4 +1,3 @@
-// Programa valido para exercitar tokens principais do lexer.
 function void main() {
     let int numero = 10;
     let real media = 10.5E2;
