@@ -5,6 +5,7 @@ Responsavel por validar a gramatica, construir a AST e reportar erros sintaticos
 
 import ply.yacc as yacc
 from frontend.lexer import tokens
+from frontend.errors import SyntacticError
 from frontend.ast_nodes import (
     ProgramNode, VarDeclarationNode, AssignmentNode, BlockNode,
     IfNode, WhileNode, ForNode, BreakNode, FunctionNode, ReturnNode,
@@ -25,6 +26,7 @@ precedence = (
     ('left', 'TIMES', 'DIVIDE', 'MOD'),
     ('right', 'POWER'),
     ('right', 'NOT', 'UPLUS', 'UMINUS', 'INCREMENT', 'DECREMENT'),
+    ('left', 'LBRACKET', 'RBRACKET', 'LPAREN', 'RPAREN', 'DOT'),
     ('nonassoc', 'IFX'),
     ('nonassoc', 'ELSE'),
 )
@@ -45,7 +47,6 @@ def p_statement_list(p):
 # Comandos válidos na linguagem
 def p_statement(p):
     '''statement : var_declaration
-                 | assignment
                  | if_statement
                  | while_statement
                  | for_statement
@@ -82,39 +83,21 @@ def p_var_declaration(p):
                        | LET type LBRACKET INT_LITERAL RBRACKET ID SEMICOLON
                        | LET type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression SEMICOLON
                        | CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression SEMICOLON'''
-    if p[1] == 'let':
-        is_const = False
-        if len(p) == 5:
-            p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=None, is_const=is_const)
-        elif len(p) == 7:
-            if p[4] == '=':
-                p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=p[5], is_const=is_const)
-            else:
-                p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=None, is_const=is_const, dimension=p[4])
-        else:
-            p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=p[8], is_const=is_const, dimension=p[4])
-    else:
-        is_const = True
-        if len(p) == 7:
-            p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=p[5], is_const=is_const)
-        else:
-            p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=p[8], is_const=is_const, dimension=p[4])
+    is_const = (p[1] == 'const')
+    if len(p) == 5:
+        # LET type ID SEMICOLON
+        p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=None, is_const=is_const, dimension=None)
+    elif len(p) == 7:
+        # LET/CONST type ID ASSIGN expression SEMICOLON
+        p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=p[5], is_const=is_const, dimension=None)
+    elif len(p) == 8:
+        # LET type LBRACKET INT_LITERAL RBRACKET ID SEMICOLON
+        p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=None, is_const=is_const, dimension=p[4])
+    elif len(p) == 10:
+        # LET/CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression SEMICOLON
+        p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=p[8], is_const=is_const, dimension=p[4])
 
 # Alvos de atribuição (IDs, vetores, atributos de classes)
-def p_target_id(p):
-    'target : ID'
-    p[0] = IdentifierNode(p[1])
-
-def p_target_array(p):
-    'target : target LBRACKET expression RBRACKET'
-    p[0] = ArrayAccessNode(array_expr=p[1], index_expr=p[3])
-
-def p_target_attribute(p):
-    '''target : target DOT ID
-              | THIS DOT ID'''
-    obj = IdentifierNode("this") if p[1] == 'this' else p[1]
-    p[0] = AttributeAccessNode(object_expr=obj, attribute_name=p[3])
-
 # Operadores de atribuição
 def p_assignment_op(p):
     '''assignment_op : ASSIGN
@@ -125,11 +108,13 @@ def p_assignment_op(p):
                      | MOD_ASSIGN'''
     p[0] = p[1]
 
-def p_assignment(p):
-    'assignment : target assignment_op expression SEMICOLON'
+# Expressões
+def p_expression_assignment(p):
+    'expression : expression assignment_op expression'
+    if not isinstance(p[1], (IdentifierNode, ArrayAccessNode, AttributeAccessNode)):
+        raise SyntacticError(f"Erro sintatico na linha {p.lineno(1)}: atribuicao para alvo invalido.")
     p[0] = AssignmentNode(target=p[1], value=p[3], op=p[2])
 
-# Expressões
 def p_expression_binop(p):
     '''expression : expression PLUS expression
                   | expression MINUS expression
@@ -151,13 +136,26 @@ def p_expression_unary(p):
     '''expression : NOT expression
                   | PLUS expression %prec UPLUS
                   | MINUS expression %prec UMINUS
-                  | INCREMENT target
-                  | DECREMENT target'''
+                  | INCREMENT expression
+                  | DECREMENT expression'''
+    if p[1] in ('++', '--'):
+        if not isinstance(p[2], (IdentifierNode, ArrayAccessNode, AttributeAccessNode)):
+            raise SyntacticError(f"Erro sintatico na linha {p.lineno(1)}: operador {p[1]} requer um alvo valido.")
     p[0] = UnaryOpNode(op=p[1], expression=p[2])
 
-def p_expression_target(p):
-    'expression : target'
-    p[0] = p[1]
+def p_expression_array_access(p):
+    'expression : expression LBRACKET expression RBRACKET'
+    p[0] = ArrayAccessNode(array_expr=p[1], index_expr=p[3])
+
+def p_expression_attribute_access(p):
+    '''expression : expression DOT ID
+                  | THIS DOT ID'''
+    obj = IdentifierNode("this") if p[1] == 'this' else p[1]
+    p[0] = AttributeAccessNode(object_expr=obj, attribute_name=p[3])
+
+def p_expression_id(p):
+    'expression : ID'
+    p[0] = IdentifierNode(p[1])
 
 def p_expression_number(p):
     '''expression : INT_LITERAL
@@ -188,7 +186,7 @@ def p_expression_new(p):
     p[0] = NewObjectNode(class_name=p[2], arguments=p[4])
 
 def p_expression_call(p):
-    'expression : target LPAREN argument_list RPAREN'
+    'expression : expression LPAREN argument_list RPAREN'
     p[0] = CallNode(callee=p[1], arguments=p[3])
 
 def p_expression_array_literal(p):
@@ -332,16 +330,11 @@ def p_console_log_statement(p):
     'console_log_statement : CONSOLE_LOG LPAREN argument_list RPAREN SEMICOLON'
     p[0] = ConsoleLogNode(expressions=p[3])
 
-def p_target_list(p):
-    '''target_list : target
-                   | target_list COMMA target'''
-    if len(p) == 2:
-        p[0] = [p[1]]
-    else:
-        p[0] = p[1] + [p[3]]
-
 def p_input_statement(p):
-    'input_statement : INPUT LPAREN target_list RPAREN SEMICOLON'
+    'input_statement : INPUT LPAREN argument_list RPAREN SEMICOLON'
+    for arg in p[3]:
+        if not isinstance(arg, (IdentifierNode, ArrayAccessNode, AttributeAccessNode)):
+            raise SyntacticError(f"Erro sintatico na linha {p.lineno(1)}: input requer alvos validos.")
     p[0] = InputNode(targets=p[3])
 
 def p_expression_statement(p):
@@ -356,9 +349,9 @@ def p_empty(p):
 # Tratamento de erro sintático
 def p_error(p):
     if p:
-        print(f"Erro sintatico na linha {p.lineno}: token inesperado '{p.value}'.")
+        raise SyntacticError(f"Erro sintatico na linha {p.lineno}: token inesperado '{p.value}'.")
     else:
-        print("Erro sintatico: fim de arquivo inesperado.")
+        raise SyntacticError("Erro sintatico na linha final: fim de arquivo inesperado.")
 
 # Inicialização do parser do PLY
 parser = yacc.yacc()

@@ -8,6 +8,7 @@ import sys
 import os
 from frontend.parser import parser
 from frontend.lexer import build_lexer, LexicalError
+from frontend.errors import SyntacticError
 
 def main():
     if len(sys.argv) < 2:
@@ -59,6 +60,8 @@ def main():
                 print("Erro: AST não gerada.")
         except LexicalError as le:
             print(f"Erro lexico durante a analise: {le}")
+        except SyntacticError as se:
+            print(f"Erro sintatico durante a analise: {se}")
         except Exception as e:
             print(f"Erro durante o parsing: {e}")
         return
@@ -87,6 +90,8 @@ def main():
             print("Erro: A AST nao pode ser gerada.")
     except LexicalError as le:
         print(f"Erro lexico: {le}")
+    except SyntacticError as se:
+        print(f"Erro sintatico: {se}")
     except Exception as e:
         print(f"Erro durante a analise: {e}")
 
