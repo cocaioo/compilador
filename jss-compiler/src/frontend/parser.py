@@ -97,22 +97,16 @@ def p_var_declaration(p):
         # LET/CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression SEMICOLON
         p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=p[8], is_const=is_const, dimension=p[4])
 
-# Alvos de atribuição (IDs, vetores, atributos de classes)
-# Operadores de atribuição
-def p_assignment_op(p):
-    '''assignment_op : ASSIGN
-                     | PLUS_ASSIGN
-                     | MINUS_ASSIGN
-                     | TIMES_ASSIGN
-                     | DIVIDE_ASSIGN
-                     | MOD_ASSIGN'''
-    p[0] = p[1]
-
-# Expressões
+# Expressões e atribuições
 def p_expression_assignment(p):
-    'expression : expression assignment_op expression'
+    '''expression : expression ASSIGN expression
+                  | expression PLUS_ASSIGN expression
+                  | expression MINUS_ASSIGN expression
+                  | expression TIMES_ASSIGN expression
+                  | expression DIVIDE_ASSIGN expression
+                  | expression MOD_ASSIGN expression'''
     if not isinstance(p[1], (IdentifierNode, ArrayAccessNode, AttributeAccessNode)):
-        raise SyntacticError(f"Erro sintatico na linha {p.lineno(1)}: atribuicao para alvo invalido.")
+        raise SyntacticError(f"Erro sintatico na linha {p.lineno(2)}: atribuicao para alvo invalido.")
     p[0] = AssignmentNode(target=p[1], value=p[3], op=p[2])
 
 def p_expression_binop(p):
