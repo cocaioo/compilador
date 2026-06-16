@@ -6,6 +6,7 @@ function void executa_loop(int limite) {
     let int i = 0;
     while (i < limite) {
         if (i == 5) {
+            const int z = 0;
             break;
         }
         console.log("i e: ", i);

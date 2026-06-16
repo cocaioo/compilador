@@ -9,7 +9,7 @@ class ASTNode:
         raise NotImplementedError()
 
     def get_indent(self, indent):
-        return "  " * indent
+        return "| " * indent
 
 
 class ProgramNode(ASTNode):
