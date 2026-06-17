@@ -66,3 +66,15 @@ Roda o script que valida automaticamente se os arquivos válidos compilam com su
 ```bash
 python jss-compiler/tests/parser/run_parser_tests.py
 ```
+
+---
+
+## 5. Executar o Tutorial de Erros Sintáticos
+
+Foi criado um arquivo interativo com erros progressivos para praticar a correção de problemas de sintaxe no compilador.
+
+```bash
+python jss-compiler/src/main.py jss-compiler/examples/tutorial_erros.jss
+```
+
+O compilador parará no primeiro erro. Corrija-o seguindo a recomendação explicada no terminal, salve o arquivo e execute o comando novamente até concluir todos os desafios sintáticos.
