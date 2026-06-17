@@ -80,8 +80,6 @@ def main():
         lexer.lineno = 1
         ast = parser.parse(content, lexer=lexer)
         if ast:
-            print("AST Resultante:")
-            print(ast.print_tree())
             print("Analise concluida com sucesso.")
         else:
             print("Erro: A AST nao pode ser gerada.")
