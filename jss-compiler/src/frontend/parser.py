@@ -76,26 +76,30 @@ def p_return_type(p):
     p[0] = p[1]
 
 # Declaração de variáveis e vetores
-def p_var_declaration(p):
-    '''var_declaration : LET type ID SEMICOLON
-                       | LET type ID ASSIGN expression SEMICOLON
-                       | CONST type ID ASSIGN expression SEMICOLON
-                       | LET type LBRACKET INT_LITERAL RBRACKET ID SEMICOLON
-                       | LET type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression SEMICOLON
-                       | CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression SEMICOLON'''
+def p_var_declaration_no_semicolon(p):
+    '''var_declaration_no_semicolon : LET type ID
+                                     | LET type ID ASSIGN expression
+                                     | CONST type ID ASSIGN expression
+                                     | LET type LBRACKET INT_LITERAL RBRACKET ID
+                                     | LET type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression
+                                     | CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression'''
     is_const = (p[1] == 'const')
-    if len(p) == 5:
-        # LET type ID SEMICOLON
+    if len(p) == 4:
+        # LET type ID
         p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=None, is_const=is_const, dimension=None)
-    elif len(p) == 7:
-        # LET/CONST type ID ASSIGN expression SEMICOLON
+    elif len(p) == 6:
+        # LET/CONST type ID ASSIGN expression
         p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=p[5], is_const=is_const, dimension=None)
-    elif len(p) == 8:
-        # LET type LBRACKET INT_LITERAL RBRACKET ID SEMICOLON
+    elif len(p) == 7:
+        # LET type LBRACKET INT_LITERAL RBRACKET ID
         p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=None, is_const=is_const, dimension=p[4])
-    elif len(p) == 10:
-        # LET/CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression SEMICOLON
+    elif len(p) == 9:
+        # LET/CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression
         p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=p[8], is_const=is_const, dimension=p[4])
+
+def p_var_declaration(p):
+    'var_declaration : var_declaration_no_semicolon SEMICOLON'
+    p[0] = p[1]
 
 # Expressões e atribuições
 def p_expression_assignment(p):
@@ -227,8 +231,14 @@ def p_expression_opt(p):
                       | expression'''
     p[0] = p[1]
 
+def p_for_init(p):
+    '''for_init : empty
+                | var_declaration_no_semicolon
+                | expression'''
+    p[0] = p[1]
+
 def p_for_statement(p):
-    'for_statement : FOR LPAREN expression_opt SEMICOLON expression_opt SEMICOLON expression_opt RPAREN statement'
+    'for_statement : FOR LPAREN for_init SEMICOLON expression_opt SEMICOLON expression_opt RPAREN statement'
     p[0] = ForNode(init=p[3], condition=p[5], update=p[7], body=p[9])
 
 def p_break_statement(p):
@@ -447,13 +457,7 @@ def p_error(p):
                 f"Para declarar uma variável, utilize a palavra-chave 'let' ou 'const' (ex: 'let {last_sym_val} {p.value};')."
             )
 
-    # 2. Tentativa de declaração let/const dentro dos parênteses do for (ex: for(let int i = 0;...))
-    if token_type in ('LET', 'CONST') and 'FOR' in sym_types:
-        raise SyntacticError(
-            f"Erro sintatico na linha {line_num}: token inesperado '{p.value}'. "
-            "Em JSS, não é permitida a declaração de variáveis com 'let' ou 'const' dentro dos parênteses do 'for'. "
-            "Declare a variável antes do 'for' e apenas use a atribuição (ex: 'let int i; for (i = 0; i < 10; ++i)')."
-        )
+
 
     # 3. Vetor declarado com colchetes no lugar errado (ex: let int x[10];)
     if token_type == 'LBRACKET' and len(sym_types) >= 4:
