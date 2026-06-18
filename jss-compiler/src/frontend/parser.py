@@ -36,13 +36,22 @@ def p_program(p):
     'program : statement_list'
     p[0] = ProgramNode(p[1])
 
+def flatten(lst):
+    flat = []
+    for item in lst:
+        if isinstance(item, list):
+            flat.extend(flatten(item))
+        else:
+            flat.append(item)
+    return flat
+
 def p_statement_list(p):
     '''statement_list : statement
                       | statement_list statement'''
     if len(p) == 2:
-        p[0] = [p[1]]
+        p[0] = flatten([p[1]])
     else:
-        p[0] = p[1] + [p[2]]
+        p[0] = flatten(p[1] + [p[2]])
 
 # Comandos válidos na linguagem
 def p_statement(p):
@@ -75,18 +84,29 @@ def p_return_type(p):
                    | VOID_TYPE'''
     p[0] = p[1]
 
+def p_id_list(p):
+    '''id_list : ID
+               | id_list COMMA ID'''
+    if len(p) == 2:
+        p[0] = [p[1]]
+    else:
+        p[0] = p[1] + [p[3]]
+
 # Declaração de variáveis e vetores
 def p_var_declaration_no_semicolon(p):
-    '''var_declaration_no_semicolon : LET type ID
-                                     | LET type ID ASSIGN expression
+    '''var_declaration_no_semicolon : LET type ID ASSIGN expression
                                      | CONST type ID ASSIGN expression
                                      | LET type LBRACKET INT_LITERAL RBRACKET ID
                                      | LET type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression
-                                     | CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression'''
+                                     | CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression
+                                     | LET type id_list'''
     is_const = (p[1] == 'const')
     if len(p) == 4:
-        # LET type ID
-        p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=None, is_const=is_const, dimension=None)
+        # LET type id_list
+        if len(p[3]) == 1:
+            p[0] = VarDeclarationNode(var_type=p[2], name=p[3][0], value=None, is_const=is_const, dimension=None)
+        else:
+            p[0] = [VarDeclarationNode(var_type=p[2], name=name, value=None, is_const=is_const, dimension=None) for name in p[3]]
     elif len(p) == 6:
         # LET/CONST type ID ASSIGN expression
         p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=p[5], is_const=is_const, dimension=None)
@@ -218,13 +238,17 @@ def p_if_statement(p):
     '''if_statement : IF LPAREN expression RPAREN statement %prec IFX
                     | IF LPAREN expression RPAREN statement ELSE statement'''
     if len(p) == 6:
-        p[0] = IfNode(condition=p[3], then_branch=p[5])
+        then_branch = BlockNode(p[5]) if isinstance(p[5], list) else p[5]
+        p[0] = IfNode(condition=p[3], then_branch=then_branch)
     else:
-        p[0] = IfNode(condition=p[3], then_branch=p[5], else_branch=p[7])
+        then_branch = BlockNode(p[5]) if isinstance(p[5], list) else p[5]
+        else_branch = BlockNode(p[7]) if isinstance(p[7], list) else p[7]
+        p[0] = IfNode(condition=p[3], then_branch=then_branch, else_branch=else_branch)
 
 def p_while_statement(p):
     'while_statement : WHILE LPAREN expression RPAREN statement'
-    p[0] = WhileNode(condition=p[3], body=p[5])
+    body = BlockNode(p[5]) if isinstance(p[5], list) else p[5]
+    p[0] = WhileNode(condition=p[3], body=body)
 
 def p_expression_opt(p):
     '''expression_opt : empty
@@ -239,7 +263,9 @@ def p_for_init(p):
 
 def p_for_statement(p):
     'for_statement : FOR LPAREN for_init SEMICOLON expression_opt SEMICOLON expression_opt RPAREN statement'
-    p[0] = ForNode(init=p[3], condition=p[5], update=p[7], body=p[9])
+    init = BlockNode(p[3]) if isinstance(p[3], list) else p[3]
+    body = BlockNode(p[9]) if isinstance(p[9], list) else p[9]
+    p[0] = ForNode(init=init, condition=p[5], update=p[7], body=body)
 
 def p_break_statement(p):
     'break_statement : BREAK SEMICOLON'
@@ -457,8 +483,14 @@ def p_error(p):
                 f"Para declarar uma variável, utilize a palavra-chave 'let' ou 'const' (ex: 'let {last_sym_val} {p.value};')."
             )
 
-
-
+    # 2. Uso de incremento/decremento pós-fixado (ex: x++ ou x--)
+    if token_type in ('INCREMENT', 'DECREMENT'):
+        op_symbol = p.value if p else ('++' if token_type == 'INCREMENT' else '--')
+        op_name = "incremento" if token_type == 'INCREMENT' else "decremento"
+        raise SyntacticError(
+            f"Erro sintatico na linha {line_num}: token inesperado '{op_symbol}'. "
+            f"Em JSS, o operador de {op_name} ({op_symbol}) deve ser utilizado apenas de forma pré-fixada (ex: '{op_symbol}variavel' em vez de 'variavel{op_symbol}')."
+        )
     # 3. Vetor declarado com colchetes no lugar errado (ex: let int x[10];)
     if token_type == 'LBRACKET' and len(sym_types) >= 4:
         if sym_types[-3:] == ['LET', 'type', 'ID']:

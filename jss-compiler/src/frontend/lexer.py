@@ -133,6 +133,15 @@ def t_MULTILINE_COMMENT(t):
     )
 
 
+def t_INVALID_LOGICAL_ASSIGN(t):
+    r"&&=|\|\|="
+    raise LexicalError(
+        f"Erro lexico na linha {t.lineno}: operador '{t.value}' nao e suportado. "
+        "Atribuicoes logicas compostas nao sao permitidas em JSS; "
+        f"use a forma explicita (ex: 'variavel = variavel {t.value[:-1]} expressao')."
+    )
+
+
 def t_CONSOLE_LOG(t):
     r"console\.log(?![A-Za-z0-9_])"
     return t

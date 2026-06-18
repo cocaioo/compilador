@@ -69,12 +69,12 @@ python jss-compiler/tests/parser/run_parser_tests.py
 
 ---
 
-## 5. Executar o Tutorial de Erros Sintáticos
+## 5. Executar o Tutorial de Erros Léxicos e Sintáticos
 
-Foi criado um arquivo interativo com erros progressivos para praticar a correção de problemas de sintaxe no compilador.
+Foi criado um arquivo interativo com erros progressivos para praticar a identificação e correção de problemas léxicos e sintáticos no compilador.
 
 ```bash
 python jss-compiler/src/main.py jss-compiler/examples/tutorial_erros.jss
 ```
 
-O compilador parará no primeiro erro. Corrija-o seguindo a recomendação explicada no terminal, salve o arquivo e execute o comando novamente até concluir todos os desafios sintáticos.
+O compilador parará no primeiro erro. Corrija-o seguindo a recomendação explicada no comentário do arquivo, salve o arquivo e execute o comando novamente até concluir todos os desafios léxicos e sintáticos.
