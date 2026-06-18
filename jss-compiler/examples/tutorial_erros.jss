@@ -29,7 +29,7 @@ class Retangulo {
     }
 }
 
-// [Desafio 5] Erro: Declaração com 'let' dentro do loop 'for'
+// [Desafio 5] Erro: Operador pós-fixado 'i++' (JSS exige pré-fixado '++i')
 function void testFor() {
     for (let int i = 0; i < 5; i++) {
         console.log(i);
