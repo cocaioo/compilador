@@ -5,7 +5,7 @@ Responsavel por validar a gramatica, construir a AST e reportar erros sintaticos
 
 import ply.yacc as yacc
 from frontend.lexer import tokens
-from frontend.errors import SyntacticError
+from frontend.errors import SyntacticError, format_visual_error
 from frontend.ast_nodes import (
     ProgramNode, VarDeclarationNode, AssignmentNode, BlockNode,
     IfNode, WhileNode, ForNode, BreakNode, FunctionNode, ReturnNode,
@@ -49,9 +49,19 @@ def p_statement_list(p):
     '''statement_list : statement
                       | statement_list statement'''
     if len(p) == 2:
-        p[0] = flatten([p[1]])
+        p[0] = [x for x in flatten([p[1]]) if x is not None]
     else:
-        p[0] = flatten(p[1] + [p[2]])
+        p[0] = [x for x in flatten(p[1] + [p[2]]) if x is not None]
+
+def p_statement_error_semicolon(p):
+    'statement : error SEMICOLON'
+    p[0] = None
+    p.parser.errok()
+
+def p_statement_error_rbrace(p):
+    'statement : error RBRACE'
+    p[0] = None
+    p.parser.errok()
 
 # Comandos válidos na linguagem
 def p_statement(p):
@@ -130,7 +140,13 @@ def p_expression_assignment(p):
                   | expression DIVIDE_ASSIGN expression
                   | expression MOD_ASSIGN expression'''
     if not isinstance(p[1], (IdentifierNode, ArrayAccessNode, AttributeAccessNode)):
-        raise SyntacticError(f"Erro sintatico na linha {p.lineno(2)}: atribuicao para alvo invalido.")
+        msg = "atribuicao para alvo invalido."
+        line = p.lineno(2)
+        lexpos = p.lexpos(2)
+        formatted = format_visual_error(p.lexer.lexdata, "Erro Sintático", msg, line, lexpos)
+        if not hasattr(parser, 'errors'):
+            parser.errors = []
+        parser.errors.append(formatted)
     p[0] = AssignmentNode(target=p[1], value=p[3], op=p[2])
 
 def p_expression_binop(p):
@@ -158,7 +174,13 @@ def p_expression_unary(p):
                   | DECREMENT expression'''
     if p[1] in ('++', '--'):
         if not isinstance(p[2], (IdentifierNode, ArrayAccessNode, AttributeAccessNode)):
-            raise SyntacticError(f"Erro sintatico na linha {p.lineno(1)}: operador {p[1]} requer um alvo valido.")
+            msg = f"operador {p[1]} requer um alvo valido."
+            line = p.lineno(1)
+            lexpos = p.lexpos(1)
+            formatted = format_visual_error(p.lexer.lexdata, "Erro Sintático", msg, line, lexpos)
+            if not hasattr(parser, 'errors'):
+                parser.errors = []
+            parser.errors.append(formatted)
     p[0] = UnaryOpNode(op=p[1], expression=p[2])
 
 def p_expression_array_access(p):
@@ -364,7 +386,13 @@ def p_input_statement(p):
     'input_statement : INPUT LPAREN argument_list RPAREN SEMICOLON'
     for arg in p[3]:
         if not isinstance(arg, (IdentifierNode, ArrayAccessNode, AttributeAccessNode)):
-            raise SyntacticError(f"Erro sintatico na linha {p.lineno(1)}: input requer alvos validos.")
+            msg = "input requer alvos validos."
+            line = p.lineno(1)
+            lexpos = p.lexpos(1)
+            formatted = format_visual_error(p.lexer.lexdata, "Erro Sintático", msg, line, lexpos)
+            if not hasattr(parser, 'errors'):
+                parser.errors = []
+            parser.errors.append(formatted)
     p[0] = InputNode(targets=p[3])
 
 def p_expression_statement(p):
@@ -470,6 +498,9 @@ def p_error(p):
     except Exception:
         sym_types = []
 
+    err_msg = None
+    error_class = "Erro Sintático"
+
     # 1. Declaração de variável estilo C/Java sem let/const (ex: int x = 10;)
     if token_type == 'ID' and len(sym_types) >= 2 and 'CLASS' not in sym_types:
         last_sym_type = sym_types[-1]
@@ -478,21 +509,23 @@ def p_error(p):
                 last_sym_val = parser.symstack[-1].value if last_sym_type == 'ID' else last_sym_type.lower().replace('_type', '')
             except Exception:
                 last_sym_val = last_sym_type
-            raise SyntacticError(
-                f"Erro sintatico na linha {line_num}: token inesperado '{p.value}'. "
+            err_msg = (
+                f"token inesperado '{p.value}'. "
                 f"Para declarar uma variável, utilize a palavra-chave 'let' ou 'const' (ex: 'let {last_sym_val} {p.value};')."
             )
 
     # 2. Uso de incremento/decremento pós-fixado (ex: x++ ou x--)
-    if token_type in ('INCREMENT', 'DECREMENT'):
+    elif token_type in ('INCREMENT', 'DECREMENT'):
         op_symbol = p.value if p else ('++' if token_type == 'INCREMENT' else '--')
         op_name = "incremento" if token_type == 'INCREMENT' else "decremento"
-        raise SyntacticError(
-            f"Erro sintatico na linha {line_num}: token inesperado '{op_symbol}'. "
+        err_msg = (
+            f"token inesperado '{op_symbol}'. "
             f"Em JSS, o operador de {op_name} ({op_symbol}) deve ser utilizado apenas de forma pré-fixada (ex: '{op_symbol}variavel' em vez de 'variavel{op_symbol}')."
         )
+        error_class = "Erro Sintático (Confusão Léxica)"
+
     # 3. Vetor declarado com colchetes no lugar errado (ex: let int x[10];)
-    if token_type == 'LBRACKET' and len(sym_types) >= 4:
+    elif token_type == 'LBRACKET' and len(sym_types) >= 4:
         if sym_types[-3:] == ['LET', 'type', 'ID']:
             try:
                 type_name = getattr(parser.symstack[-2], 'value', 'int')
@@ -500,13 +533,13 @@ def p_error(p):
             except Exception:
                 type_name = "int"
                 id_name = "vetor"
-            raise SyntacticError(
-                f"Erro sintatico na linha {line_num}: token inesperado '['. "
+            err_msg = (
+                f"token inesperado '['. "
                 f"Em JSS, os colchetes de declaração de vetores devem vir antes do nome da variável (ex: 'let {type_name}[10] {id_name};')."
             )
 
     # 4. Método/função declarado antes do construtor na classe
-    if 'CLASS' in sym_types and 'class_constructor' not in sym_types:
+    elif 'CLASS' in sym_types and 'class_constructor' not in sym_types:
         # Caso A: Falha ao encontrar '(' após 'tipo nome' (ex: class A { int area() ... })
         is_method_signature = (
             token_type == 'LPAREN' and 
@@ -520,132 +553,175 @@ def p_error(p):
             sym_types[-1] in ('class_attribute_list', 'LBRACE')
         )
         if is_method_signature or is_void_method:
-            raise SyntacticError(
-                f"Erro sintatico na linha {line_num}: token inesperado {unexpected}. "
+            err_msg = (
+                f"token inesperado {unexpected}. "
                 "Toda classe em JSS deve obrigatoriamente definir um construtor antes de declarar seus métodos."
             )
 
     # 5. Falta de tipo na declaração de variável (ex: let x = 10; ou let x;)
-    if token_type in ('ASSIGN', 'SEMICOLON', 'PLUS_ASSIGN', 'MINUS_ASSIGN', 'TIMES_ASSIGN', 'DIVIDE_ASSIGN', 'MOD_ASSIGN') and len(sym_types) >= 2:
+    elif token_type in ('ASSIGN', 'SEMICOLON', 'PLUS_ASSIGN', 'MINUS_ASSIGN', 'TIMES_ASSIGN', 'DIVIDE_ASSIGN', 'MOD_ASSIGN') and len(sym_types) >= 2:
         if sym_types[-2:] in (['LET', 'ID'], ['CONST', 'ID']):
             var_name = getattr(parser.symstack[-1], 'value', 'x')
             keyword = sym_types[-2].lower()
-            raise SyntacticError(
-                f"Erro sintatico na linha {line_num}: token inesperado '{p.value}'. "
+            err_msg = (
+                f"token inesperado '{p.value}'. "
                 f"Ausência de tipo na declaração da variável. Em JSS, o tipo deve ser explicitado (ex: '{keyword} int {var_name} = ...' ou '{keyword} int {var_name};')."
             )
 
     # 6. Ordem de declaração invertida (ex: int let x = 10;)
-    if token_type in ('LET', 'CONST') and len(sym_types) >= 1 and 'CLASS' not in sym_types:
+    elif token_type in ('LET', 'CONST') and len(sym_types) >= 1 and 'CLASS' not in sym_types:
         last_sym_type = sym_types[-1]
         if last_sym_type in ('INT_TYPE', 'REAL_TYPE', 'STR_TYPE', 'BOOL_TYPE', 'ID'):
             try:
                 last_sym_val = parser.symstack[-1].value if last_sym_type == 'ID' else last_sym_type.lower().replace('_type', '')
             except Exception:
                 last_sym_val = last_sym_type
-            raise SyntacticError(
-                f"Erro sintatico na linha {line_num}: token inesperado '{p.value}'. "
+            err_msg = (
+                f"token inesperado '{p.value}'. "
                 f"A ordem de declaração de variáveis em JSS exige a palavra-chave antes do tipo (ex: '{p.value} {last_sym_val} variavel;' em vez de '{last_sym_val} {p.value} variavel;')."
             )
 
-    # Se tivermos a lista de tokens esperados do yacc, monta a orientação
-    if raw_expected:
-        clean_expected = [t for t in raw_expected if t != '$end' and not t.startswith('error')]
-        
-        # Tratamento especial de EOF (fim de arquivo)
-        if token_type == "EOF":
-            if 'SEMICOLON' in clean_expected and len(clean_expected) > 10:
-                raise SyntacticError(f"Erro sintatico na linha {line_num}: fim de arquivo inesperado. Talvez esteja faltando um ';'.")
-            elif 'RBRACE' in clean_expected:
-                raise SyntacticError(f"Erro sintatico na linha {line_num}: fim de arquivo inesperado. Talvez esteja faltando fechar uma chave '}}'.")
-            elif 'RPAREN' in clean_expected:
-                raise SyntacticError(f"Erro sintatico na linha {line_num}: fim de arquivo inesperado. Talvez esteja faltando fechar um parêntese ')'.")
-            elif 'RBRACKET' in clean_expected:
-                raise SyntacticError(f"Erro sintatico na linha {line_num}: fim de arquivo inesperado. Talvez esteja faltando fechar um colchete ']'.")
-
-        # Traduz os tokens esperados
-        translated = []
-        for t in clean_expected:
-            if t == 'ID':
-                # Refina a descrição de ID conforme o contexto
-                if 'LET' in sym_types or 'CONST' in sym_types or (len(sym_types) >= 1 and sym_types[-1] in ('type', 'RBRACKET')):
-                    translated.append("um nome de variável")
-                elif 'FUNCTION' in sym_types:
-                    translated.append("um nome de função")
-                elif 'CLASS' in sym_types:
-                    if token_type == 'CONSTRUCTOR':
-                        translated.append("o nome da classe (para o construtor)")
-                    else:
-                        translated.append("um identificador (nome de atributo, método ou classe)")
-                elif len(sym_types) >= 1 and sym_types[-1] == 'CLASS':
-                    translated.append("um nome de classe")
-                else:
-                    translated.append("um identificador")
-            elif t in TOKEN_TRANSLATIONS:
-                translated.append(TOKEN_TRANSLATIONS[t])
-            else:
-                translated.append(f"'{t.lower()}'")
-
-        # Remove duplicatas mantendo ordem
-        unique_translated = []
-        for item in translated:
-            if item not in unique_translated:
-                unique_translated.append(item)
-
-        if len(unique_translated) > 0 and len(unique_translated) <= 5:
-            if len(unique_translated) == 1:
-                expected_str = f" Esperava-se {unique_translated[0]}."
-            else:
-                expected_str = f" Esperava-se um dos seguintes: {', '.join(unique_translated[:-1])} ou {unique_translated[-1]}."
-        elif len(unique_translated) > 5:
-            # Conjunto de tokens que iniciam novos comandos
-            STATEMENT_STARTERS = {'LET', 'CONST', 'IF', 'WHILE', 'FOR', 'BREAK', 'FUNCTION', 'RETURN', 'CLASS', 'CONSOLE_LOG', 'INPUT'}
-            # Conjunto de tokens que estendem expressões
-            OPERATORS = {'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'MOD', 'POWER', 'EQ', 'NE', 'GT', 'GE', 'LT', 'LE', 'AND', 'OR', 'DOT', 'ASSIGN', 'PLUS_ASSIGN', 'MINUS_ASSIGN', 'TIMES_ASSIGN', 'DIVIDE_ASSIGN', 'MOD_ASSIGN', 'INCREMENT', 'DECREMENT', 'LBRACKET', 'LPAREN'}
-
-            has_statement_starters = any(tok in clean_expected for tok in STATEMENT_STARTERS)
-            has_operators = any(tok in clean_expected for tok in OPERATORS)
-
-            # Mostra apenas sugestões de pontuação/delimitadores ou ID se fizerem sentido
-            suggestions = []
-            if 'SEMICOLON' in clean_expected:
-                suggestions.append("';'")
-            if 'RBRACE' in clean_expected:
-                suggestions.append("'}'")
-            if 'RPAREN' in clean_expected:
-                suggestions.append("')'")
-            if 'RBRACKET' in clean_expected:
-                suggestions.append("']'")
-            if 'ID' in clean_expected:
-                suggestions.append("um identificador")
-            
-            if suggestions:
-                if len(suggestions) == 1:
-                    base_str = suggestions[0]
-                else:
-                    base_str = f"{', '.join(suggestions[:-1])} ou {suggestions[-1]}"
-
-                if has_statement_starters and not has_operators:
-                    expected_str = f" Esperava-se {base_str} (ou o início de uma nova instrução)."
-                elif has_operators and not has_statement_starters:
-                    expected_str = f" Esperava-se {base_str} (ou a continuação da expressão)."
-                elif has_operators and has_statement_starters:
-                    expected_str = f" Esperava-se {base_str} (ou a continuação da expressão / início de uma nova instrução)."
-                else:
-                    expected_str = f" Esperava-se {base_str}."
-            else:
-                if has_statement_starters and not has_operators:
-                    expected_str = " Esperava-se um novo comando ou instrução válida."
-                elif has_operators and not has_statement_starters:
-                    expected_str = " Esperava-se a continuação da expressão."
-                else:
-                    expected_str = " Esperava-se uma expressão ou comando válido."
-        else:
-            expected_str = ""
-    else:
+    # Se não foi capturado por nenhum caso de contexto, gera a orientação genérica
+    if err_msg is None:
         expected_str = ""
+        if raw_expected:
+            clean_expected = [t for t in raw_expected if t != '$end' and not t.startswith('error')]
+            
+            # Tratamento especial de EOF (fim de arquivo)
+            if token_type == "EOF":
+                if 'SEMICOLON' in clean_expected and len(clean_expected) > 10:
+                    expected_str = " Talvez esteja faltando um ';'."
+                elif 'RBRACE' in clean_expected:
+                    expected_str = " Talvez esteja faltando fechar uma chave '}'."
+                elif 'RPAREN' in clean_expected:
+                    expected_str = " Talvez esteja faltando fechar um parêntese ')'."
+                elif 'RBRACKET' in clean_expected:
+                    expected_str = " Talvez esteja faltando fechar um colchete ']'."
+            
+            if not expected_str and clean_expected:
+                # Traduz os tokens esperados
+                translated = []
+                for t in clean_expected:
+                    if t == 'ID':
+                        if 'LET' in sym_types or 'CONST' in sym_types or (len(sym_types) >= 1 and sym_types[-1] in ('type', 'RBRACKET')):
+                            translated.append("um nome de variável")
+                        elif 'FUNCTION' in sym_types:
+                            translated.append("um nome de função")
+                        elif 'CLASS' in sym_types:
+                            if token_type == 'CONSTRUCTOR':
+                                translated.append("o nome da classe (para o construtor)")
+                            else:
+                                translated.append("um identificador (nome de atributo, método ou classe)")
+                        elif len(sym_types) >= 1 and sym_types[-1] == 'CLASS':
+                            translated.append("um nome de classe")
+                        else:
+                            translated.append("um identificador")
+                    elif t in TOKEN_TRANSLATIONS:
+                        translated.append(TOKEN_TRANSLATIONS[t])
+                    else:
+                        translated.append(f"'{t.lower()}'")
 
-    raise SyntacticError(f"Erro sintatico na linha {line_num}: token inesperado {unexpected}.{expected_str}")
+                # Remove duplicatas mantendo ordem
+                unique_translated = []
+                for item in translated:
+                    if item not in unique_translated:
+                        unique_translated.append(item)
+
+                if len(unique_translated) > 0 and len(unique_translated) <= 5:
+                    if len(unique_translated) == 1:
+                        expected_str = f" Esperava-se {unique_translated[0]}."
+                    else:
+                        expected_str = f" Esperava-se um dos seguintes: {', '.join(unique_translated[:-1])} ou {unique_translated[-1]}."
+                elif len(unique_translated) > 5:
+                    STATEMENT_STARTERS = {'LET', 'CONST', 'IF', 'WHILE', 'FOR', 'BREAK', 'FUNCTION', 'RETURN', 'CLASS', 'CONSOLE_LOG', 'INPUT'}
+                    OPERATORS = {'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'MOD', 'POWER', 'EQ', 'NE', 'GT', 'GE', 'LT', 'LE', 'AND', 'OR', 'DOT', 'ASSIGN', 'PLUS_ASSIGN', 'MINUS_ASSIGN', 'TIMES_ASSIGN', 'DIVIDE_ASSIGN', 'MOD_ASSIGN', 'INCREMENT', 'DECREMENT', 'LBRACKET', 'LPAREN'}
+
+                    has_statement_starters = any(tok in clean_expected for tok in STATEMENT_STARTERS)
+                    has_operators = any(tok in clean_expected for tok in OPERATORS)
+
+                    suggestions = []
+                    if 'SEMICOLON' in clean_expected:
+                        suggestions.append("';'")
+                    if 'RBRACE' in clean_expected:
+                        suggestions.append("'}'")
+                    if 'RPAREN' in clean_expected:
+                        suggestions.append("')'")
+                    if 'RBRACKET' in clean_expected:
+                        suggestions.append("']'")
+                    if 'ID' in clean_expected:
+                        suggestions.append("um identificador")
+                    
+                    if suggestions:
+                        if len(suggestions) == 1:
+                            base_str = suggestions[0]
+                        else:
+                            base_str = f"{', '.join(suggestions[:-1])} ou {suggestions[-1]}"
+
+                        if has_statement_starters and not has_operators:
+                            expected_str = f" Esperava-se {base_str} (ou o início de uma nova instrução)."
+                        elif has_operators and not has_statement_starters:
+                            expected_str = f" Esperava-se {base_str} (ou a continuação da expressão)."
+                        elif has_operators and has_statement_starters:
+                            expected_str = f" Esperava-se {base_str} (ou a continuação da expressão / início de uma nova instrução)."
+                        else:
+                            expected_str = f" Esperava-se {base_str}."
+                    else:
+                        if has_statement_starters and not has_operators:
+                            expected_str = " Esperava-se um novo comando ou instrução válida."
+                        elif has_operators and not has_statement_starters:
+                            expected_str = " Esperava-se a continuação da expressão."
+                        else:
+                            expected_str = " Esperava-se uma expressão ou comando válido."
+
+        err_msg = f"token inesperado {unexpected}.{expected_str}"
+
+    # Formatar o erro visualmente
+    if p:
+        lexpos = p.lexpos
+        source_code = p.lexer.lexdata
+    else:
+        source_code = getattr(parser, 'source_code', "")
+        lexpos = len(source_code)
+
+    formatted = format_visual_error(source_code, error_class, err_msg, line_num, lexpos)
+    
+    if not hasattr(parser, 'errors'):
+        parser.errors = []
+    
+    # Evitar duplicar a mesma mensagem de erro na sequência devido a recuperações repetitivas no mesmo token
+    if not parser.errors or parser.errors[-1] != formatted:
+        parser.errors.append(formatted)
 
 # Inicialização do parser do PLY
 parser = yacc.yacc()
+parser.errors = []
+
+# Wrapper para coletar múltiplos erros e levantar uma única exceção ao final
+_orig_parse = parser.parse
+
+def custom_parse(input_data, *args, **kwargs):
+    parser.errors = []
+    parser.source_code = input_data
+    
+    # Inicializar a lista de erros no lexer se ele for fornecido
+    lexer = kwargs.get('lexer')
+    if lexer:
+        lexer.errors = []
+        lexer.source_code = input_data
+        
+    ast = _orig_parse(input_data, *args, **kwargs)
+    
+    # Agregar todos os erros de ambas as fases (léxica e sintática)
+    all_errors = []
+    if lexer and hasattr(lexer, 'errors') and lexer.errors:
+        all_errors.extend(lexer.errors)
+    if parser.errors:
+        all_errors.extend(parser.errors)
+        
+    if all_errors:
+        # Une todas as mensagens formatadas com separadores
+        full_msg = "\n" + ("\n" + "=" * 50 + "\n").join(all_errors)
+        raise SyntacticError(full_msg)
+    return ast
+
+parser.parse = custom_parse

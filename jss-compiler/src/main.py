@@ -78,6 +78,7 @@ def main():
     try:
         lexer = build_lexer()
         lexer.lineno = 1
+        
         ast = parser.parse(content, lexer=lexer)
         if ast:
             # Para visualizar a AST resultante, descomente as linhas abaixo:
@@ -88,6 +89,7 @@ def main():
             print("Erro: A AST nao pode ser gerada.")
             sys.exit(1)
     except LexicalError as le:
+        # Tratamento do erro léxico do colega (abortando de imediato)
         print(f"Erro lexico: {le}")
         sys.exit(1)
     except SyntacticError as se:
