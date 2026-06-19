@@ -13,24 +13,21 @@
 // =====================================================================
 
 // [Desafio Léxico 1] Erro: Caractere inválido
-let int erro_lexico1 = 10;
+let int erro_lexico1 = @;
 
 // [Desafio Léxico 2] Erro: Comentários multilinha não permitidos
-//corrigido
+/*corrigido*/
 
 // [Desafio Léxico 3] Erro: Identificador começando com dígito
-let int erro_lexico = 30;
+let int 1erro_lexico = 30;
 
 // [Desafio Léxico 4] Erro: Escape inválido em string
-let str erro_lexico4 = "Texto com escape inválido: \t";
+let str erro_lexico4 = "Texto com escape inválido:\t";
 
 // [Desafio Léxico 5] Erro: String não finalizada
-// Faltam as aspas de fechamento da string.
 let str erro_lexico5 = "Minha string sem fechar;
 
 // [Desafio Léxico 6] Erro: Atribuição lógica composta (&&= ou ||=) não suportada
-// JSS não suporta a atribuição lógica composta.
-// Para corrigir: Converta a linha abaixo para a forma explícita 'erro_lexico6 = erro_lexico6 && false;'
 let bool erro_lexico6 = true;
 erro_lexico6 &&= false;
 
@@ -48,17 +45,16 @@ let real erro2[5];
 // [Desafio Sintático 3] Erro: Falta de tipo na declaração da variável
 let erro3 = 20;
 
-// [Desafio Sintático 4] Erro: Métodos de classe declarados antes do construtor
+// [Desafio Sintático 4] Erro: Métodos de classe declarados antes do construtor e método errático
 class Retangulo {
+    }
     int largura;
     
     int area() {
         return this.largura;
     }
-    
     Retangulo constructor(int w) {
         this.largura = w;
-    }
 }
 
 // [Desafio Sintático 5] Erro: Operador pós-fixado 'i++' (JSS exige pré-fixado '++i')
@@ -77,4 +73,3 @@ function void testSemicolon() {
 function void testUnbalanced() {
     if (true) {
         console.log("bloco aberto");
-    // Faltam os fechamentos '}' do 'if' e da função 'testUnbalanced'
