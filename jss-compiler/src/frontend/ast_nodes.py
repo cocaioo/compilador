@@ -35,7 +35,12 @@ class VarDeclarationNode(ASTNode):
 
     def print_tree(self, indent=0):
         type_str = "CONST" if self.is_const else "LET"
-        dim_str = f"[{self.dimension}]" if self.dimension is not None else ""
+        if isinstance(self.dimension, list):
+            dim_str = "".join([f"[{d}]" for d in self.dimension])
+        elif self.dimension is not None:
+            dim_str = f"[{self.dimension}]"
+        else:
+            dim_str = ""
         result = self.get_indent(indent) + f"VarDeclarationNode ({type_str} {self.var_type}{dim_str} {self.name}):\n"
         if self.value:
             result += self.value.print_tree(indent + 1)

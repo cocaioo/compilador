@@ -93,7 +93,7 @@ def main():
         print(f"Erro lexico: {le}")
         sys.exit(1)
     except SyntacticError as se:
-        print(f"Erro sintatico: {se}")
+        print(se)
         sys.exit(1)
     except Exception as e:
         print(f"Erro durante a analise: {e}")

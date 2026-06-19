@@ -102,13 +102,21 @@ def p_id_list(p):
     else:
         p[0] = p[1] + [p[3]]
 
+def p_dimension_list(p):
+    '''dimension_list : LBRACKET INT_LITERAL RBRACKET
+                      | dimension_list LBRACKET INT_LITERAL RBRACKET'''
+    if len(p) == 4:
+        p[0] = [p[2]]
+    else:
+        p[0] = p[1] + [p[3]]
+
 # Declaração de variáveis e vetores
 def p_var_declaration_no_semicolon(p):
     '''var_declaration_no_semicolon : LET type ID ASSIGN expression
                                      | CONST type ID ASSIGN expression
-                                     | LET type LBRACKET INT_LITERAL RBRACKET ID
-                                     | LET type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression
-                                     | CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression
+                                     | LET type dimension_list ID
+                                     | LET type dimension_list ID ASSIGN expression
+                                     | CONST type dimension_list ID ASSIGN expression
                                      | LET type id_list'''
     is_const = (p[1] == 'const')
     if len(p) == 4:
@@ -117,15 +125,19 @@ def p_var_declaration_no_semicolon(p):
             p[0] = VarDeclarationNode(var_type=p[2], name=p[3][0], value=None, is_const=is_const, dimension=None)
         else:
             p[0] = [VarDeclarationNode(var_type=p[2], name=name, value=None, is_const=is_const, dimension=None) for name in p[3]]
+    elif len(p) == 5:
+        # LET type dimension_list ID
+        dims = p[3]
+        dimension = dims[0] if len(dims) == 1 else dims
+        p[0] = VarDeclarationNode(var_type=p[2], name=p[4], value=None, is_const=is_const, dimension=dimension)
     elif len(p) == 6:
         # LET/CONST type ID ASSIGN expression
         p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=p[5], is_const=is_const, dimension=None)
     elif len(p) == 7:
-        # LET type LBRACKET INT_LITERAL RBRACKET ID
-        p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=None, is_const=is_const, dimension=p[4])
-    elif len(p) == 9:
-        # LET/CONST type LBRACKET INT_LITERAL RBRACKET ID ASSIGN expression
-        p[0] = VarDeclarationNode(var_type=p[2], name=p[6], value=p[8], is_const=is_const, dimension=p[4])
+        # LET/CONST type dimension_list ID ASSIGN expression
+        dims = p[3]
+        dimension = dims[0] if len(dims) == 1 else dims
+        p[0] = VarDeclarationNode(var_type=p[2], name=p[4], value=p[6], is_const=is_const, dimension=dimension)
 
 def p_var_declaration(p):
     'var_declaration : var_declaration_no_semicolon SEMICOLON'
