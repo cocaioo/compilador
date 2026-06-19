@@ -141,7 +141,6 @@ def t_MULTILINE_COMMENT(t):
             t.lexpos
         )
         t.lexer.errors.append(formatted)
-        t.lexer.skip(2)
     else:
         raise LexicalError(msg)
 
@@ -162,7 +161,6 @@ def t_INVALID_LOGICAL_ASSIGN(t):
             t.lexpos
         )
         t.lexer.errors.append(formatted)
-        t.lexer.skip(len(t.value))
     else:
         raise LexicalError(msg)
 
