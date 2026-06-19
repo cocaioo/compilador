@@ -438,4 +438,3 @@ function void main( ) { // facultativo a declaração de uma função main
           input(n1 , n2);
           console.log ( console.log(Media (n1 , n2));
 }
-
