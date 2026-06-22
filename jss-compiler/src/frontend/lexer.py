@@ -128,41 +128,26 @@ def t_COMMENT(t):
 
 def t_MULTILINE_COMMENT(t):
     r"/\*"
-    msg = (
-        f"Erro lexico na linha {t.lineno}: comentarios multilinha '/* ... */' "
-        "nao sao permitidos; use comentarios de linha '//'"
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        "comentarios multilinha '/* ... */' nao sao permitidos; use comentarios de linha '//'",
+        t.lineno,
+        t.lexpos
     )
-    if hasattr(t.lexer, 'errors') and t.lexer.errors is not None:
-        formatted = format_visual_error(
-            t.lexer.lexdata,
-            "Erro Léxico",
-            "comentarios multilinha '/* ... */' nao sao permitidos; use comentarios de linha '//'",
-            t.lineno,
-            t.lexpos
-        )
-        t.lexer.errors.append(formatted)
-    else:
-        raise LexicalError(msg)
+    raise LexicalError(formatted)
 
 
 def t_INVALID_LOGICAL_ASSIGN(t):
     r"&&=|\|\|="
-    msg = (
-        f"Erro lexico na linha {t.lineno}: operador '{t.value}' nao e suportado. "
-        "Atribuicoes logicas compostas nao sao permitidas em JSS; "
-        f"use a forma explicita (ex: 'variavel = variavel {t.value[:-1]} expressao')."
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        f"operador '{t.value}' nao e suportado. Atribuicoes logicas compostas nao sao permitidas em JSS; use a forma explicita (ex: 'variavel = variavel {t.value[:-1]} expressao').",
+        t.lineno,
+        t.lexpos
     )
-    if hasattr(t.lexer, 'errors') and t.lexer.errors is not None:
-        formatted = format_visual_error(
-            t.lexer.lexdata,
-            "Erro Léxico",
-            f"operador '{t.value}' nao e suportado. Atribuicoes logicas compostas nao sao permitidas em JSS; use a forma explicita (ex: 'variavel = variavel {t.value[:-1]} expressao').",
-            t.lineno,
-            t.lexpos
-        )
-        t.lexer.errors.append(formatted)
-    else:
-        raise LexicalError(msg)
+    raise LexicalError(formatted)
 
 
 def t_CONSOLE_LOG(t):
@@ -178,23 +163,14 @@ def t_REAL_LITERAL(t):
 
 def t_INVALID_ID(t):
     r"\d+[A-Za-z_][A-Za-z0-9_]*"
-    msg = (
-        f"Erro lexico na linha {t.lineno}: identificador invalido '{t.value}'. "
-        "Identificadores nao podem comecar com digito"
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        f"identificador invalido '{t.value}'. Identificadores nao podem comecar com digito",
+        t.lineno,
+        t.lexpos
     )
-    if hasattr(t.lexer, 'errors') and t.lexer.errors is not None:
-        formatted = format_visual_error(
-            t.lexer.lexdata,
-            "Erro Léxico",
-            f"identificador invalido '{t.value}'. Identificadores nao podem comecar com digito",
-            t.lineno,
-            t.lexpos
-        )
-        t.lexer.errors.append(formatted)
-        t.type = 'ID'
-        return t
-    else:
-        raise LexicalError(msg)
+    raise LexicalError(formatted)
 
 
 def t_INT_LITERAL(t):
@@ -206,44 +182,26 @@ def t_INT_LITERAL(t):
 def t_INVALID_STRING_ESCAPE(t):
     r'"([^\\\r\n"]|\\[n"\\])*\\[^n"\\\r\n]([^\\\r\n"]|\\.)*"'
     invalid_escape = _find_invalid_escape(t.value)
-    msg = (
-        f"Erro lexico na linha {t.lineno}: escape invalido '\\{invalid_escape}' "
-        "em string"
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        f"escape invalido '\\{invalid_escape}' em string",
+        t.lineno,
+        t.lexpos
     )
-    if hasattr(t.lexer, 'errors') and t.lexer.errors is not None:
-        formatted = format_visual_error(
-            t.lexer.lexdata,
-            "Erro Léxico",
-            f"escape invalido '\\{invalid_escape}' em string",
-            t.lineno,
-            t.lexpos
-        )
-        t.lexer.errors.append(formatted)
-        t.type = 'STRING_LITERAL'
-        t.value = _decode_string_literal_relaxed(t.value)
-        return t
-    else:
-        raise LexicalError(msg)
+    raise LexicalError(formatted)
 
 
 def t_UNTERMINATED_STRING(t):
     r'"([^\\\r\n"]|\\.)*(\r\n|\r|\n|$)'
-    msg = f"Erro lexico na linha {t.lineno}: string nao finalizada"
-    if hasattr(t.lexer, 'errors') and t.lexer.errors is not None:
-        formatted = format_visual_error(
-            t.lexer.lexdata,
-            "Erro Léxico",
-            "string nao finalizada",
-            t.lineno,
-            t.lexpos
-        )
-        t.lexer.errors.append(formatted)
-        t.lexer.lineno += t.value.count('\n')
-        t.type = 'STRING_LITERAL'
-        t.value = t.value[1:]
-        return t
-    else:
-        raise LexicalError(msg)
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        "string nao finalizada",
+        t.lineno,
+        t.lexpos
+    )
+    raise LexicalError(formatted)
 
 
 def t_STRING_LITERAL(t):
@@ -265,19 +223,14 @@ def t_newline(t):
 
 
 def t_error(t):
-    msg = f"Erro lexico na linha {t.lineno}: caractere invalido '{t.value[0]}'"
-    if hasattr(t.lexer, 'errors') and t.lexer.errors is not None:
-        formatted = format_visual_error(
-            t.lexer.lexdata,
-            "Erro Léxico",
-            f"caractere invalido '{t.value[0]}'",
-            t.lineno,
-            t.lexpos
-        )
-        t.lexer.errors.append(formatted)
-        t.lexer.skip(1)
-    else:
-        raise LexicalError(msg)
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        f"caractere invalido '{t.value[0]}'",
+        t.lineno,
+        t.lexpos
+    )
+    raise LexicalError(formatted)
 
 
 def _decode_string_literal(raw_value):
@@ -298,24 +251,6 @@ def _decode_string_literal(raw_value):
 
     return "".join(decoded)
 
-
-def _decode_string_literal_relaxed(raw_value):
-    """Decodifica escapes validos e ignora escapes invalidos para recuperacao."""
-    decoded = []
-    index = 1
-    last_index = len(raw_value) - 1
-
-    while index < last_index:
-        current = raw_value[index]
-        if current == "\\":
-            escape = raw_value[index + 1]
-            decoded.append(ALLOWED_STRING_ESCAPES.get(escape, escape))
-            index += 2
-        else:
-            decoded.append(current)
-            index += 1
-
-    return "".join(decoded)
 
 
 def _find_invalid_escape(raw_value):

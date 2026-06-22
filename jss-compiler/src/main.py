@@ -89,8 +89,11 @@ def main():
             print("Erro: A AST nao pode ser gerada.")
             sys.exit(1)
     except LexicalError as le:
-        # Tratamento do erro léxico do colega (abortando de imediato)
-        print(f"Erro lexico: {le}")
+        msg = str(le)
+        if "Erro" in msg and "\n" in msg:
+            print(msg)
+        else:
+            print(f"Erro lexico: {le}")
         sys.exit(1)
     except SyntacticError as se:
         print(se)

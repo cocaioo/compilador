@@ -514,7 +514,7 @@ def p_error(p):
     error_class = "Erro Sintático"
 
     # 1. Declaração de variável estilo C/Java sem let/const (ex: int x = 10;)
-    if token_type == 'ID' and len(sym_types) >= 2 and 'CLASS' not in sym_types:
+    if token_type == 'ID' and len(sym_types) >= 2 and 'CLASS' not in sym_types and 'LET' not in sym_types and 'CONST' not in sym_types:
         last_sym_type = sym_types[-1]
         if last_sym_type in ('INT_TYPE', 'REAL_TYPE', 'STR_TYPE', 'BOOL_TYPE', 'ID'):
             try:
@@ -581,7 +581,7 @@ def p_error(p):
             )
 
     # 6. Ordem de declaração invertida (ex: int let x = 10;)
-    elif token_type in ('LET', 'CONST') and len(sym_types) >= 1 and 'CLASS' not in sym_types:
+    elif token_type in ('LET', 'CONST') and len(sym_types) >= 1 and 'CLASS' not in sym_types and 'LET' not in sym_types and 'CONST' not in sym_types:
         last_sym_type = sym_types[-1]
         if last_sym_type in ('INT_TYPE', 'REAL_TYPE', 'STR_TYPE', 'BOOL_TYPE', 'ID'):
             try:
@@ -591,6 +591,19 @@ def p_error(p):
             err_msg = (
                 f"token inesperado '{p.value}'. "
                 f"A ordem de declaração de variáveis em JSS exige a palavra-chave antes do tipo (ex: '{p.value} {last_sym_val} variavel;' em vez de '{last_sym_val} {p.value} variavel;')."
+            )
+
+    # 7. Tentativa de usar palavra reservada como identificador
+    elif token_type in (
+        'LET', 'CONST', 'FUNCTION', 'IF', 'ELSE', 'WHILE', 'FOR', 'BREAK', 'RETURN', 
+        'CLASS', 'CONSTRUCTOR', 'NEW', 'THIS', 'NULL', 'TRUE', 'FALSE', 'INT_TYPE', 
+        'REAL_TYPE', 'STR_TYPE', 'BOOL_TYPE', 'VOID_TYPE', 'INPUT', 'CONSOLE_LOG'
+    ) and raw_expected:
+        clean_expected = [t for t in raw_expected if t != '$end' and not t.startswith('error')]
+        if 'ID' in clean_expected:
+            err_msg = (
+                f"token inesperado '{p.value}'. "
+                f"O nome '{p.value}' é uma palavra reservada da linguagem e não pode ser utilizado como identificador."
             )
 
     # Se não foi capturado por nenhum caso de contexto, gera a orientação genérica
