@@ -73,3 +73,50 @@ function void testSemicolon() {
 function void testUnbalanced() {
     if (true) {
         console.log("bloco aberto");
+
+
+// =====================================================================
+// ETAPA 3: ERROS SEMÂNTICOS
+// =====================================================================
+
+// [Desafio Semântico 1] Erro: Redeclaração de variável no mesmo escopo
+function void testRedeclaration() {
+    let int x = 10;
+    let int x = 20;
+}
+
+// [Desafio Semântico 2] Erro: Atribuição para constante
+function void testConstReassign() {
+    const real PI = 3.14;
+    PI = 3.1415;
+}
+
+// [Desafio Semântico 3] Erro: Tipos incompatíveis (atribuição de string para int)
+function void testTypeMismatch() {
+    let int valor = 50;
+    valor = "cinquenta";
+}
+
+// [Desafio Semântico 4] Erro: Identificador não declarado
+function void testUndeclared() {
+    variavel_inexistente = 42;
+}
+
+// [Desafio Semântico 5] Erro: Atribuição direta a um vetor fora da declaração
+function void testDirectVectorAssign() {
+    let int[3] vetor = [1, 2, 3];
+    vetor = [4, 5, 6];
+}
+
+// [Desafio Semântico 6] Erro: Condição do 'if' deve ser do tipo 'bool'
+function void testIfCondition() {
+    if (123) {
+        console.log("Número não é booleano!");
+    }
+}
+
+// [Desafio Semântico 7] Erro: Uso do 'this' fora de métodos de classe
+function void testInvalidThis() {
+    let int self_val = this.x;
+}
+
