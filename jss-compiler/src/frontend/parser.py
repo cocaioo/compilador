@@ -744,9 +744,8 @@ def custom_parse(input_data, *args, **kwargs):
         all_errors.extend(parser.errors)
         
     if all_errors:
-        # Une todas as mensagens formatadas com separadores
-        full_msg = "\n" + ("\n" + "=" * 50 + "\n").join(all_errors)
-        raise SyntacticError(full_msg)
+        # Exibe apenas o primeiro erro para evitar o efeito cascata de erros fantasmas
+        raise SyntacticError("\n" + all_errors[0])
     return ast
 
 parser.parse = custom_parse
