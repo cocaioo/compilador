@@ -378,3 +378,38 @@ class IdentifierNode(ASTNode):
 
     def print_tree(self, indent=0):
         return self.get_indent(indent) + f"IdentifierNode ({self.name})\n"
+
+
+# Sistema de rastreamento automático de posição (linha e coluna) dos nós da AST
+import sys
+
+def _get_parser_pos():
+    frame = sys._getframe(1)
+    while frame:
+        func_name = frame.f_code.co_name
+        if func_name.startswith('p_') and 'p' in frame.f_locals:
+            p = frame.f_locals['p']
+            if hasattr(p, 'lineno') and len(p) > 1:
+                try:
+                    return p.lineno(1), p.lexpos(1)
+                except Exception:
+                    pass
+        frame = frame.f_back
+    return None, None
+
+def track_node_pos(cls):
+    orig_init = getattr(cls, '__init__', None)
+    def new_init(self, *args, **kwargs):
+        if orig_init and orig_init is not object.__init__:
+            orig_init(self, *args, **kwargs)
+        lineno, lexpos = _get_parser_pos()
+        self.lineno = lineno
+        self.lexpos = lexpos
+    cls.__init__ = new_init
+    return cls
+
+# Aplicar o decorador a todos os nós da AST definidos neste módulo
+for name, val in list(globals().items()):
+    if isinstance(val, type) and issubclass(val, ASTNode) and val is not ASTNode:
+        globals()[name] = track_node_pos(val)
+

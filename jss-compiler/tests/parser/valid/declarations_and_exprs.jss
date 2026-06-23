@@ -1,6 +1,6 @@
 // Testes validos de declaracoes e expressoes
 let int x = 10;
-const real y = 3.14 * 2.0;
+let real y = 3.14 * 2.0;
 let str s = "Hello World";
 let bool b = true;
 let bool c = false;

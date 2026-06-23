@@ -6,6 +6,9 @@ Responsavel por centralizar classes e formatacao de mensagens de erro.
 class SyntacticError(Exception):
     """Erro encontrado durante a analise sintatica."""
 
+class SemanticError(Exception):
+    """Erro encontrado durante a analise semantica."""
+
 def format_visual_error(source_code, error_class, message, line, lexpos):
     """Formata uma mensagem de erro visual com indicador do caret (^)."""
     if source_code is None:

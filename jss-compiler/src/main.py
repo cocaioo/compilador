@@ -8,7 +8,8 @@ import sys
 import os
 from frontend.parser import parser
 from frontend.lexer import build_lexer, LexicalError
-from frontend.errors import SyntacticError
+from frontend.errors import SyntacticError, SemanticError
+from frontend.semantic import SemanticAnalyzer
 
 def main():
     content = None
@@ -81,6 +82,11 @@ def main():
         
         ast = parser.parse(content, lexer=lexer)
         if ast:
+            # Executar análise semântica
+            analyzer = SemanticAnalyzer()
+            analyzer.source_code = content
+            analyzer.analyze(ast)
+
             # Para visualizar a AST resultante, descomente as linhas abaixo:
             # print("AST Resultante:")
             # print(ast.print_tree())
@@ -97,6 +103,9 @@ def main():
         sys.exit(1)
     except SyntacticError as se:
         print(se)
+        sys.exit(1)
+    except SemanticError as sme:
+        print(sme)
         sys.exit(1)
     except Exception as e:
         print(f"Erro durante a analise: {e}")

@@ -14,6 +14,5 @@ class Retangulo {
 
 function void main() {
     let Retangulo r = new Retangulo(5, 10);
-    let Retangulo r = new Retangulo(5, 10);
     console.log("Area do retangulo:", r.area());
 }
