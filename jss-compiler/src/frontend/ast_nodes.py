@@ -390,6 +390,19 @@ def _get_parser_pos():
         if func_name.startswith('p_') and 'p' in frame.f_locals:
             p = frame.f_locals['p']
             if hasattr(p, 'lineno') and len(p) > 1:
+                # Busca sequencial pelo primeiro símbolo com linha válida
+                for i in range(1, len(p)):
+                    # 1. Tentar obter do slice do token terminal
+                    slice_item = p.slice[i]
+                    lineno = getattr(slice_item, 'lineno', 0)
+                    lexpos = getattr(slice_item, 'lexpos', 0)
+                    if lineno != 0:
+                        return lineno, lexpos
+                    # 2. Tentar obter do próprio objeto filho (se for um nó da AST)
+                    val = p[i]
+                    if hasattr(val, 'lineno') and getattr(val, 'lineno', 0) != 0:
+                        return val.lineno, getattr(val, 'lexpos', 0)
+                # Fallback original
                 try:
                     return p.lineno(1), p.lexpos(1)
                 except Exception:
