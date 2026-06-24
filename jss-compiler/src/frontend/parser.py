@@ -728,25 +728,36 @@ _orig_parse = parser.parse
 def custom_parse(input_data, *args, **kwargs):
     parser.errors = []
     parser.source_code = input_data
-    
-    # Inicializar a lista de erros no lexer se ele for fornecido
+
+    # Inicializar a lista de erros no lexer e ativar modo de coleta
     lexer = kwargs.get('lexer')
     if lexer:
         lexer.errors = []
         lexer.source_code = input_data
-        
+        lexer.collect_errors = True
+
     ast = _orig_parse(input_data, *args, **kwargs)
-    
+
     # Agregar todos os erros de ambas as fases (léxica e sintática)
     all_errors = []
     if lexer and hasattr(lexer, 'errors') and lexer.errors:
         all_errors.extend(lexer.errors)
     if parser.errors:
         all_errors.extend(parser.errors)
-        
+
+    # Desativar modo de coleta do lexer
+    if lexer:
+        lexer.collect_errors = False
+
     if all_errors:
-        # Exibe apenas o primeiro erro para evitar o efeito cascata de erros fantasmas
-        raise SyntacticError("\n" + all_errors[0])
+        # Deduplica erros idênticos mantendo ordem
+        seen = set()
+        unique = []
+        for e in all_errors:
+            if e not in seen:
+                seen.add(e)
+                unique.append(e)
+        raise SyntacticError("\n" + "\n\n".join(unique))
     return ast
 
 parser.parse = custom_parse

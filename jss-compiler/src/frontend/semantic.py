@@ -25,12 +25,14 @@ class SemanticAnalyzer:
         self.current_class = None
         self.in_loop = 0
 
+    INVALID = 'invalid'
+
     def error(self, node, msg):
-        """Formata e lança um erro semântico rico de imediato."""
+        """Formata e acumula um erro semântico para relatório posterior."""
         line = getattr(node, 'lineno', 1) or 1
         lexpos = getattr(node, 'lexpos', 0) or 0
         formatted = format_visual_error(self.source_code, "Erro Semântico", msg, line, lexpos)
-        raise SemanticError(formatted)
+        self.errors.append(formatted)
 
     def analyze(self, node):
         """Método de despacho de visita baseado no tipo do nó."""
@@ -53,6 +55,8 @@ class SemanticAnalyzer:
 
     def check_type_compatibility(self, node, expected, got, is_assignment=False):
         """Verifica a compatibilidade de tipos, permitindo coerção de int para real."""
+        if expected == self.INVALID or got == self.INVALID:
+            return
         if expected == got:
             return
         if expected == 'real' and got == 'int':
@@ -79,6 +83,8 @@ class SemanticAnalyzer:
     def visit_ProgramNode(self, node):
         for stmt in node.statements:
             self.analyze(stmt)
+        if self.errors:
+            raise SemanticError("\n" + "\n\n".join(self.errors))
         return None
 
     def visit_VarDeclarationNode(self, node):
@@ -92,20 +98,24 @@ class SemanticAnalyzer:
 
         # 2. Validar o tipo
         var_type = node.var_type
+        type_valid = True
         if var_type not in ('int', 'real', 'str', 'bool', 'void'):
             class_sym = self.global_scope.lookup(var_type)
             if not class_sym or not class_sym.is_class:
                 self.error(node, f"tipo '{var_type}' nao definido.")
+                var_type = self.INVALID
+                type_valid = False
 
         # 3. Validar atribuição de valor inicial se houver
         if node.value:
             value_type = self.analyze(node.value)
-            if node.dimension is not None:
-                num_dims = len(node.dimension) if isinstance(node.dimension, list) else 1
-                expected_type = var_type + ("[]" * num_dims)
-            else:
-                expected_type = var_type
-            self.check_type_compatibility(node.value, expected_type, value_type, is_assignment=True)
+            if type_valid and value_type != self.INVALID:
+                if node.dimension is not None:
+                    num_dims = len(node.dimension) if isinstance(node.dimension, list) else 1
+                    expected_type = node.var_type + ("[]" * num_dims)
+                else:
+                    expected_type = var_type
+                self.check_type_compatibility(node.value, expected_type, value_type, is_assignment=True)
 
         # 4. Validar dimensões de vetores
         dimension = node.dimension
@@ -124,11 +134,12 @@ class SemanticAnalyzer:
                 if expected_size is not None and len(node.value.expressions) != expected_size:
                     self.error(node, f"tamanho do literal de vetor ({len(node.value.expressions)}) nao condiz com a dimensao declarada ({expected_size}).")
 
-                for expr in node.value.expressions:
-                    elem_type = self.analyze(expr)
-                    self.check_type_compatibility(expr, var_type, elem_type)
+                if type_valid:
+                    for expr in node.value.expressions:
+                        elem_type = self.analyze(expr)
+                        self.check_type_compatibility(expr, node.var_type, elem_type)
 
-        # 5. Registrar o símbolo
+        # 5. Registrar o símbolo (com tipo original ou invalid para suprimir cascata)
         sym = Symbol(
             name=node.name,
             type_name=var_type,
@@ -151,8 +162,12 @@ class SemanticAnalyzer:
         target_type = self.analyze(node.target)
         value_type = self.analyze(node.value)
 
+        if target_type == self.INVALID or value_type == self.INVALID:
+            return self.INVALID
+
         if target_type.endswith('[]'):
             self.error(node, f"atribuicao direta para vetor nao e permitida. Vetores so podem ser modificados elemento a elemento.")
+            return self.INVALID
 
         if node.op != '=':
             if target_type not in ('int', 'real') or value_type not in ('int', 'real'):
@@ -170,7 +185,7 @@ class SemanticAnalyzer:
 
     def visit_IfNode(self, node):
         cond_type = self.analyze(node.condition)
-        if cond_type != 'bool':
+        if cond_type != 'bool' and cond_type != self.INVALID:
             self.error(node.condition, f"a condicao do 'if' deve ser do tipo 'bool', mas obteve '{cond_type}'.")
         self.analyze(node.then_branch)
         if node.else_branch:
@@ -179,7 +194,7 @@ class SemanticAnalyzer:
 
     def visit_WhileNode(self, node):
         cond_type = self.analyze(node.condition)
-        if cond_type != 'bool':
+        if cond_type != 'bool' and cond_type != self.INVALID:
             self.error(node.condition, f"a condicao do 'while' deve ser do tipo 'bool', mas obteve '{cond_type}'.")
         self.in_loop += 1
         self.analyze(node.body)
@@ -192,7 +207,7 @@ class SemanticAnalyzer:
             self.analyze(node.init)
         if node.condition:
             cond_type = self.analyze(node.condition)
-            if cond_type != 'bool':
+            if cond_type != 'bool' and cond_type != self.INVALID:
                 self.error(node.condition, f"a condicao do 'for' deve ser do tipo 'bool', mas obteve '{cond_type}'.")
         if node.update:
             self.analyze(node.update)
@@ -226,6 +241,7 @@ class SemanticAnalyzer:
     def visit_FunctionNode(self, node):
         if self.current_scope != self.global_scope:
             self.error(node, "declaracao de funcoes aninhadas nao e permitida.")
+            return None  # Evita corrupção de escopo
 
         # Validar assinatura da função main se for global
         if node.name == 'main' and not self.current_class:
@@ -283,14 +299,20 @@ class SemanticAnalyzer:
     def visit_ReturnNode(self, node):
         if not self.current_function:
             self.error(node, "comando 'return' deve ser utilizado apenas dentro de funcoes ou metodos.")
+            if node.expression:
+                self.analyze(node.expression)
+            return None
 
         expected_type = self.current_function.return_type
 
         if node.expression:
             if expected_type == 'void':
                 self.error(node, "funcoes do tipo 'void' nao devem retornar expressoes.")
+                self.analyze(node.expression)
+                return None
             got_type = self.analyze(node.expression)
-            self.check_type_compatibility(node.expression, expected_type, got_type)
+            if got_type != self.INVALID:
+                self.check_type_compatibility(node.expression, expected_type, got_type)
         else:
             if expected_type != 'void':
                 self.error(node, f"retorno vazio invalido. Funcao espera retornar '{expected_type}'.")
@@ -301,6 +323,7 @@ class SemanticAnalyzer:
     def visit_ClassDeclarationNode(self, node):
         if self.current_scope != self.global_scope:
             self.error(node, "declaracao de classes aninhadas nao e permitida.")
+            return None  # Evita corrupção de escopo
 
         if self.global_scope.lookup_local(node.name):
             self.error(node, f"redeclaracao da classe '{node.name}'.")
@@ -320,6 +343,11 @@ class SemanticAnalyzer:
         # 2. Construtor da Classe
         if not node.constructor:
             self.error(node, f"a classe '{node.name}' deve obrigatoriamente definir um construtor.")
+            # Sem construtor, pula para métodos
+            for method in node.methods:
+                self.analyze(method)
+            self.current_class = None
+            return None
 
         if node.constructor.class_name != node.name:
             self.error(node.constructor, f"nome do construtor '{node.constructor.class_name}' deve coincidir com o nome da classe '{node.name}'.")
@@ -360,24 +388,41 @@ class SemanticAnalyzer:
     # --- Visitores de Expressões (Retornam Tipos) ---
 
     def visit_CallNode(self, node):
+        func_sym = None
+
         if isinstance(node.callee, IdentifierNode):
-            func_sym = self.current_scope.lookup(node.callee.name)
-            if not func_sym or not func_sym.is_function:
+            sym = self.current_scope.lookup(node.callee.name)
+            if not sym or not sym.is_function:
                 self.error(node, f"funcao '{node.callee.name}' nao declarada.")
+            else:
+                func_sym = sym
         elif isinstance(node.callee, AttributeAccessNode):
             obj_type = self.analyze(node.callee.object_expr)
-            class_sym = self.global_scope.lookup(obj_type)
-            if not class_sym or not class_sym.is_class:
-                self.error(node.callee.object_expr, f"alvo de chamada de metodo deve ser um objeto de classe, mas obteve '{obj_type}'.")
-            method_name = node.callee.attribute_name
-            func_sym = class_sym.methods.get(method_name)
-            if not func_sym:
-                self.error(node.callee, f"metodo '{method_name}' nao encontrado na classe '{obj_type}'.")
+            if obj_type == self.INVALID:
+                pass  # Não emitir erros em cascata
+            else:
+                class_sym = self.global_scope.lookup(obj_type)
+                if not class_sym or not class_sym.is_class:
+                    self.error(node.callee.object_expr, f"alvo de chamada de metodo deve ser um objeto de classe, mas obteve '{obj_type}'.")
+                else:
+                    method_name = node.callee.attribute_name
+                    func_sym = class_sym.methods.get(method_name)
+                    if not func_sym:
+                        self.error(node.callee, f"metodo '{method_name}' nao encontrado na classe '{obj_type}'.")
         else:
             self.error(node, "alvo de chamada invalido.")
 
+        # Se não conseguiu resolver a função, analisa os argumentos mas retorna invalid
+        if not func_sym:
+            for arg in node.arguments:
+                self.analyze(arg)
+            return self.INVALID
+
         if len(node.arguments) != len(func_sym.params):
             self.error(node, f"numero incorreto de argumentos para a chamada de '{func_sym.name}'. Esperava {len(func_sym.params)}, mas obteve {len(node.arguments)}.")
+            for arg in node.arguments:
+                self.analyze(arg)
+            return func_sym.return_type if func_sym.return_type else self.INVALID
 
         for i, arg in enumerate(node.arguments):
             expected_type = func_sym.params[i][0]
@@ -391,8 +436,12 @@ class SemanticAnalyzer:
         right_type = self.analyze(node.right)
         op = node.op
 
+        if left_type == self.INVALID or right_type == self.INVALID:
+            return self.INVALID
+
         if left_type.endswith('[]') or right_type.endswith('[]'):
             self.error(node, f"operador '{op}' nao e suportado para vetores.")
+            return self.INVALID
 
         if op in ('&&', '||'):
             if left_type != 'bool' or right_type != 'bool':
@@ -409,6 +458,7 @@ class SemanticAnalyzer:
                (right_type not in ('int', 'real', 'str', 'bool', 'void') and left_type == 'null'):
                 return 'bool'
             self.error(node, f"comparacao invalida entre tipos '{left_type}' e '{right_type}'.")
+            return self.INVALID
 
         if op in ('>', '>=', '<', '<='):
             if left_type in ('int', 'real') and right_type in ('int', 'real'):
@@ -418,6 +468,7 @@ class SemanticAnalyzer:
             if left_type == 'bool' and right_type == 'bool':
                 return 'bool'
             self.error(node, f"operador '{op}' invalido para tipos '{left_type}' e '{right_type}'.")
+            return self.INVALID
 
         if op in ('+', '-', '*', '/', '%', '**'):
             if op in ('%', '**'):
@@ -438,15 +489,20 @@ class SemanticAnalyzer:
                 return 'int'
 
             self.error(node, f"operador '{op}' invalido para tipos '{left_type}' e '{right_type}'.")
+            return self.INVALID
 
-        return None
+        return self.INVALID
 
     def visit_UnaryOpNode(self, node):
         expr_type = self.analyze(node.expression)
         op = node.op
 
+        if expr_type == self.INVALID:
+            return self.INVALID
+
         if expr_type.endswith('[]'):
             self.error(node, f"operador '{op}' nao e suportado para vetores.")
+            return self.INVALID
 
         if op == '!':
             if expr_type != 'bool':
@@ -456,26 +512,32 @@ class SemanticAnalyzer:
         if op in ('+', '-'):
             if expr_type not in ('int', 'real'):
                 self.error(node, f"operador '{op}' unario requer operando numerico.")
+                return self.INVALID
             return expr_type
 
         if op in ('++', '--'):
             if expr_type not in ('int', 'real'):
                 self.error(node, f"operador '{op}' requer operando numerico.")
+                return self.INVALID
             if self.is_constant_target(node.expression):
                 self.error(node, f"operador '{op}' nao pode ser aplicado a um alvo constante.")
             return expr_type
 
-        return None
+        return self.INVALID
 
     def visit_ArrayAccessNode(self, node):
         array_type = self.analyze(node.array_expr)
         index_type = self.analyze(node.index_expr)
+
+        if array_type == self.INVALID or index_type == self.INVALID:
+            return self.INVALID
 
         if index_type != 'int':
             self.error(node.index_expr, f"indice do vetor deve ser do tipo 'int', mas obteve '{index_type}'.")
 
         if not array_type.endswith('[]'):
             self.error(node.index_expr, f"tentativa de indexar um valor do tipo '{array_type}' que nao e um vetor.")
+            return self.INVALID
 
         return array_type[:-2]
 
@@ -483,6 +545,9 @@ class SemanticAnalyzer:
         if not node.expressions:
             return 'void[]'
         elem_types = [self.analyze(expr) for expr in node.expressions]
+        # Se qualquer elemento é invalid, o literal inteiro é invalid
+        if any(t == self.INVALID for t in elem_types):
+            return self.INVALID
         base_type = elem_types[0]
         for i, t in enumerate(elem_types):
             if t != base_type:
@@ -496,14 +561,19 @@ class SemanticAnalyzer:
 
     def visit_AttributeAccessNode(self, node):
         obj_type = self.analyze(node.object_expr)
+        if obj_type == self.INVALID:
+            return self.INVALID
+
         class_sym = self.global_scope.lookup(obj_type)
         if not class_sym or not class_sym.is_class:
             self.error(node.object_expr, f"alvo de acesso de atributo deve ser um objeto de classe, mas obteve '{obj_type}'.")
+            return self.INVALID
 
         attr_name = node.attribute_name
         attr_sym = class_sym.attributes.get(attr_name)
         if not attr_sym:
             self.error(node, f"atributo '{attr_name}' nao encontrado na classe '{obj_type}'.")
+            return self.INVALID
 
         return attr_sym.type
 
@@ -511,13 +581,22 @@ class SemanticAnalyzer:
         class_sym = self.global_scope.lookup(node.class_name)
         if not class_sym or not class_sym.is_class:
             self.error(node, f"classe '{node.class_name}' nao declarada.")
+            for arg in node.arguments:
+                self.analyze(arg)
+            return self.INVALID
 
         constructor = class_sym.constructor
         if not constructor:
             self.error(node, f"classe '{node.class_name}' nao possui construtor definido.")
+            for arg in node.arguments:
+                self.analyze(arg)
+            return node.class_name
 
         if len(node.arguments) != len(constructor.params):
             self.error(node, f"numero incorreto de argumentos para construtor de '{node.class_name}'. Esperava {len(constructor.params)}, mas obteve {len(node.arguments)}.")
+            for arg in node.arguments:
+                self.analyze(arg)
+            return node.class_name
 
         for i, arg in enumerate(node.arguments):
             expected_type = constructor.params[i][0]
@@ -529,7 +608,7 @@ class SemanticAnalyzer:
     def visit_ConsoleLogNode(self, node):
         for expr in node.expressions:
             t = self.analyze(expr)
-            if t not in ('int', 'real', 'bool', 'str'):
+            if t != self.INVALID and t not in ('int', 'real', 'bool', 'str'):
                 self.error(expr, f"console.log nao pode exibir tipo complexo '{t}'.")
         return None
 
@@ -538,13 +617,16 @@ class SemanticAnalyzer:
             if self.is_constant_target(target):
                 self.error(target, "input nao pode gravar em alvo constante.")
             t = self.analyze(target)
-            if t not in ('int', 'real', 'str'):
+            if t != self.INVALID and t not in ('int', 'real', 'str'):
                 self.error(target, f"input nao pode ler para tipo '{t}'. Apenas inteiros, reais e strings sao permitidos.")
         return None
 
     def visit_CastNode(self, node):
         expr_type = self.analyze(node.expression)
         target = node.target_type
+
+        if expr_type == self.INVALID:
+            return target
 
         if target == 'str':
             if expr_type not in ('int', 'real', 'bool', 'str'):
@@ -561,6 +643,7 @@ class SemanticAnalyzer:
         sym = self.current_scope.lookup(node.name)
         if not sym:
             self.error(node, f"identificador '{node.name}' nao declarado.")
+            return self.INVALID
         if sym.dimension is not None:
             num_dims = len(sym.dimension) if isinstance(sym.dimension, list) else 1
             return sym.type + ("[]" * num_dims)

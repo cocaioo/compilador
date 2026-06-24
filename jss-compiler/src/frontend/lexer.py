@@ -126,6 +126,16 @@ def t_COMMENT(t):
     pass
 
 
+def _collect_or_raise(t, formatted):
+    """Acumula o erro se o lexer estiver em modo de coleta; caso contrário, lança LexicalError."""
+    if getattr(t.lexer, 'collect_errors', False):
+        if not hasattr(t.lexer, 'errors'):
+            t.lexer.errors = []
+        t.lexer.errors.append(formatted)
+        return True
+    raise LexicalError(formatted)
+
+
 def t_MULTILINE_COMMENT(t):
     r"/\*"
     formatted = format_visual_error(
@@ -135,7 +145,8 @@ def t_MULTILINE_COMMENT(t):
         t.lineno,
         t.lexpos
     )
-    raise LexicalError(formatted)
+    if _collect_or_raise(t, formatted):
+        return None
 
 
 def t_INVALID_LOGICAL_ASSIGN(t):
@@ -147,7 +158,8 @@ def t_INVALID_LOGICAL_ASSIGN(t):
         t.lineno,
         t.lexpos
     )
-    raise LexicalError(formatted)
+    if _collect_or_raise(t, formatted):
+        return None
 
 
 def t_CONSOLE_LOG(t):
@@ -170,7 +182,8 @@ def t_INVALID_ID(t):
         t.lineno,
         t.lexpos
     )
-    raise LexicalError(formatted)
+    if _collect_or_raise(t, formatted):
+        return None
 
 
 def t_INT_LITERAL(t):
@@ -189,7 +202,8 @@ def t_INVALID_STRING_ESCAPE(t):
         t.lineno,
         t.lexpos
     )
-    raise LexicalError(formatted)
+    if _collect_or_raise(t, formatted):
+        return None
 
 
 def t_UNTERMINATED_STRING(t):
@@ -201,7 +215,11 @@ def t_UNTERMINATED_STRING(t):
         t.lineno,
         t.lexpos
     )
-    raise LexicalError(formatted)
+    if _collect_or_raise(t, formatted):
+        # Contabilizar a quebra de linha consumida pelo regex
+        newlines = t.value.count('\n') + t.value.count('\r') - t.value.count('\r\n')
+        t.lexer.lineno += newlines
+        return None
 
 
 def t_STRING_LITERAL(t):
@@ -230,6 +248,12 @@ def t_error(t):
         t.lineno,
         t.lexpos
     )
+    if getattr(t.lexer, 'collect_errors', False):
+        if not hasattr(t.lexer, 'errors'):
+            t.lexer.errors = []
+        t.lexer.errors.append(formatted)
+        t.lexer.skip(1)
+        return
     raise LexicalError(formatted)
 
 

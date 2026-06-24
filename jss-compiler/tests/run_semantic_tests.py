@@ -51,6 +51,33 @@ def assert_invalid_file(path):
     raise AssertionError(f"{path.name} deveria gerar erro semantico")
 
 
+def test_multiple_errors_cascade_suppression():
+    source = """
+    function void main() {
+        let int a = b + c;
+        let str s = 10;
+    }
+    """
+    try:
+        analyze_code(source)
+    except SemanticError as exc:
+        message = str(exc)
+        # Conta a quantidade de erros semânticos reportados
+        errors_count = message.lower().count("erro sem")
+        if errors_count != 3:
+            raise AssertionError(f"Esperava exatamente 3 erros semanticos (com supressao de cascata), mas obteve {errors_count}:\n{message}")
+        
+        # Verificar se os erros específicos estão presentes
+        if "identificador 'b' nao declarado" not in message:
+            raise AssertionError(f"Falta erro de 'b' nao declarado:\n{message}")
+        if "identificador 'c' nao declarado" not in message:
+            raise AssertionError(f"Falta erro de 'c' nao declarado:\n{message}")
+        if "tipos incompativeis: esperava 'str', mas obteve 'int'" not in message:
+            raise AssertionError(f"Falta erro de tipo incompativel para 's':\n{message}")
+        return
+    raise AssertionError("Deveria ter gerado erro semantico")
+
+
 def main():
     valid_files = sorted(VALID_DIR.glob("*.jss"))
     invalid_files = sorted(INVALID_DIR.glob("*.jss"))
@@ -67,6 +94,9 @@ def main():
     print(f"Executando {len(invalid_files)} testes semanticos de falha...")
     for path in invalid_files:
         assert_invalid_file(path)
+
+    print("Executando teste especifico de multiplos erros e supressao de cascata...")
+    test_multiple_errors_cascade_suppression()
 
     print("OK: todos os testes semanticos passaram com sucesso.")
 

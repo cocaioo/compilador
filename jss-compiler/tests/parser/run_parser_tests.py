@@ -48,6 +48,32 @@ def assert_invalid_file(path):
     raise AssertionError(f"{path.name} deveria gerar erro sintatico")
 
 
+def test_multiple_syntax_errors():
+    source = """
+    let int x = 10 y;
+    let str s = 10 z;
+    function void main() {
+        int a;
+    }
+    """
+    try:
+        parse_code(source)
+    except SyntacticError as exc:
+        message = str(exc)
+        errors_count = message.lower().count("erro sin")
+        if errors_count != 3:
+            raise AssertionError(f"Esperava exatamente 3 erros sintaticos, mas obteve {errors_count}:\n{message}")
+        
+        if "token inesperado 'y'" not in message.lower():
+            raise AssertionError(f"Falta erro de 'y' inesperado:\n{message}")
+        if "token inesperado 'z'" not in message.lower():
+            raise AssertionError(f"Falta erro de 'z' inesperado:\n{message}")
+        if "utilize a palavra-chave 'let' ou 'const'" not in message.lower():
+            raise AssertionError(f"Falta erro de declaracao C-style:\n{message}")
+        return
+    raise AssertionError("Deveria ter gerado erro sintatico")
+
+
 def main():
     valid_files = sorted(VALID_DIR.glob("*.jss"))
     invalid_files = sorted(INVALID_DIR.glob("*.jss"))
@@ -62,6 +88,9 @@ def main():
 
     for path in invalid_files:
         assert_invalid_file(path)
+
+    # Executar teste específico de múltiplos erros sintáticos
+    test_multiple_syntax_errors()
 
     print("OK: testes do parser passaram.")
 
