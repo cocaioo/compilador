@@ -26,6 +26,7 @@ reserved = {
     "false": "FALSE",
     "int": "INT_TYPE",
     "real": "REAL_TYPE",
+    "float": "REAL_TYPE",
     "str": "STR_TYPE",
     "bool": "BOOL_TYPE",
     "void": "VOID_TYPE",
@@ -71,8 +72,7 @@ tokens = [
     "SEMICOLON",
     "COMMA",
     "DOT",
-] + list(reserved.values())
-
+] + list(set(reserved.values()))
 
 t_ignore = " \t"
 

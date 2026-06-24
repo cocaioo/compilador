@@ -86,7 +86,7 @@ def p_type(p):
             | STR_TYPE
             | BOOL_TYPE
             | ID'''
-    p[0] = p[1]
+    p[0] = 'real' if p[1] in ('real', 'float') else p[1]
 
 # Tipo de retorno de função (pode ser void)
 def p_return_type(p):
@@ -251,7 +251,8 @@ def p_expression_cast(p):
                   | REAL_TYPE LPAREN expression RPAREN
                   | BOOL_TYPE LPAREN expression RPAREN
                   | STR_TYPE LPAREN expression RPAREN'''
-    p[0] = CastNode(target_type=p[1], expression=p[3])
+    target = 'real' if p[1] in ('real', 'float') else p[1]
+    p[0] = CastNode(target_type=target, expression=p[3])
 
 # Listas de argumentos para chamadas
 def p_argument_list(p):

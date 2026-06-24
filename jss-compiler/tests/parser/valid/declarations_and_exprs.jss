@@ -6,6 +6,7 @@ let bool b = true;
 let bool c = false;
 let int[5] vetor = [1, 2, 3, 4, 5];
 let real[2] pesos;
+let float peso_total = float(x) + y;
 
 x += 5;
 x = int(3.9);

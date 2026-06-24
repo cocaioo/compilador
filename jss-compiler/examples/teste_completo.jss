@@ -17,15 +17,19 @@ class CalculosRetangulo {
 }
 
 function str maiorque(real x, real y){
-   let real[2] xy = [x,y];
+   let real[1][2] xy;
+   xy[0][0] = x;
+   xy[0][1] = y;
    let str verdadeiro = "verdadeiro, " + x + " é maior que " + y ;
    let str falso = "falso, " + x + " é menor que " + y ;
 
-   if(int(xy[0]) > int(xy[1])){
+   if(int(xy[0][0]) > int(xy[0][1])){
       return verdadeiro;
    }
       return falso;
 }
+
+function void printar(str string){console.log(string + 084);}
 
 function void main(){
    let real x,y;
@@ -41,5 +45,6 @@ function void main(){
    let CalculosRetangulo calculo = new CalculosRetangulo(x, y);
 
    let str resultado = maiorque(calculo.perimetro(), calculo.area());
-   //function void printar(){console.log(resultado);}
+   //function void printar_interno(){console.log(resultado);}
+   printar(resultado);
 }
