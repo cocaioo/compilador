@@ -204,14 +204,33 @@ class SemanticAnalyzer:
             self.error(node, "comando 'break' deve ser utilizado apenas dentro de laços de repeticao ('while' ou 'for').")
         return None
 
+    def has_return_node(self, node):
+        """Varre recursivamente o nó/bloco da AST para verificar se existe algum ReturnNode."""
+        if isinstance(node, ReturnNode):
+            return True
+        if isinstance(node, list):
+            return any(self.has_return_node(item) for item in node)
+        if hasattr(node, '__dict__'):
+            for value in node.__dict__.values():
+                if isinstance(value, list):
+                    if any(self.has_return_node(item) for item in value):
+                        return True
+                elif self.has_return_node(value):
+                    return True
+        return False
+
     def visit_FunctionNode(self, node):
         if self.current_scope != self.global_scope:
             self.error(node, "declaracao de funcoes aninhadas nao e permitida.")
 
-        if self.global_scope.lookup_local(node.name):
-            self.error(node, f"redeclaracao da funcao '{node.name}'.")
+        # Validar assinatura da função main se for global
+        if node.name == 'main' and not self.current_class:
+            if node.return_type != 'void':
+                self.error(node, "a funcao 'main' deve ser do tipo 'void'.")
+            if len(node.params) > 0:
+                self.error(node, "a funcao 'main' nao deve possuir parametros.")
 
-        # Registrar símbolo da função
+        # Registrar símbolo da função/método
         func_sym = Symbol(
             name=node.name,
             type_name=node.return_type,
@@ -219,11 +238,16 @@ class SemanticAnalyzer:
             params=node.params,
             return_type=node.return_type
         )
-        self.global_scope.define(node.name, func_sym)
 
         if self.current_class:
             func_sym.is_method = True
+            if node.name in self.current_class.methods:
+                self.error(node, f"redeclaracao do metodo '{node.name}' na classe '{self.current_class.name}'.")
             self.current_class.methods[node.name] = func_sym
+        else:
+            if self.global_scope.lookup_local(node.name):
+                self.error(node, f"redeclaracao da funcao '{node.name}'.")
+            self.global_scope.define(node.name, func_sym)
 
         self.current_function = func_sym
         self.current_scope = SymbolTable(parent=self.global_scope)
@@ -243,6 +267,10 @@ class SemanticAnalyzer:
             self.current_scope.define(p_name, Symbol(name=p_name, type_name=p_type))
 
         self.analyze(node.body)
+
+        # Verificar se a função não-void possui algum retorno no corpo
+        if node.return_type != 'void' and not self.has_return_node(node.body):
+            self.error(node, f"funcao '{node.name}' espera retornar '{node.return_type}', mas nao possui comando 'return'.")
 
         self.current_scope = self.global_scope
         self.current_function = None
@@ -429,6 +457,8 @@ class SemanticAnalyzer:
         if op in ('++', '--'):
             if expr_type not in ('int', 'real'):
                 self.error(node, f"operador '{op}' requer operando numerico.")
+            if self.is_constant_target(node.expression):
+                self.error(node, f"operador '{op}' nao pode ser aplicado a um alvo constante.")
             return expr_type
 
         return None
@@ -503,7 +533,9 @@ class SemanticAnalyzer:
         for target in node.targets:
             if self.is_constant_target(target):
                 self.error(target, "input nao pode gravar em alvo constante.")
-            self.analyze(target)
+            t = self.analyze(target)
+            if t not in ('int', 'real', 'str'):
+                self.error(target, f"input nao pode ler para tipo '{t}'. Apenas inteiros, reais e strings sao permitidos.")
         return None
 
     def visit_CastNode(self, node):
