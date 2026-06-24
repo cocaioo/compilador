@@ -100,7 +100,11 @@ class SemanticAnalyzer:
         # 3. Validar atribuição de valor inicial se houver
         if node.value:
             value_type = self.analyze(node.value)
-            expected_type = f"{var_type}[]" if node.dimension is not None else var_type
+            if node.dimension is not None:
+                num_dims = len(node.dimension) if isinstance(node.dimension, list) else 1
+                expected_type = var_type + ("[]" * num_dims)
+            else:
+                expected_type = var_type
             self.check_type_compatibility(node.value, expected_type, value_type, is_assignment=True)
 
         # 4. Validar dimensões de vetores
@@ -558,7 +562,8 @@ class SemanticAnalyzer:
         if not sym:
             self.error(node, f"identificador '{node.name}' nao declarado.")
         if sym.dimension is not None:
-            return f"{sym.type}[]"
+            num_dims = len(sym.dimension) if isinstance(sym.dimension, list) else 1
+            return sym.type + ("[]" * num_dims)
         return sym.type
 
     def visit_NumberNode(self, node):
