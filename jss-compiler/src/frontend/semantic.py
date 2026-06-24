@@ -475,7 +475,7 @@ class SemanticAnalyzer:
             self.error(node.index_expr, f"indice do vetor deve ser do tipo 'int', mas obteve '{index_type}'.")
 
         if not array_type.endswith('[]'):
-            self.error(node.array_expr, f"expressao nao e um vetor, mas obteve '{array_type}'.")
+            self.error(node.index_expr, f"tentativa de indexar um valor do tipo '{array_type}' que nao e um vetor.")
 
         return array_type[:-2]
 
