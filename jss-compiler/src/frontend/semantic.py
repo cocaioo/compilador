@@ -254,6 +254,10 @@ class SemanticAnalyzer:
             if len(node.params) > 0:
                 self.error(node, "a funcao 'main' nao deve possuir parametros.")
 
+        ret_dim = getattr(node, 'return_dimension', None)
+        if ret_dim is not None:
+            self.error(node, f"funcao '{node.name}' nao pode retornar vetor. O tipo de retorno de funcoes ou metodos nao pode ser vetor.")
+
         # Registrar símbolo da função/método
         ret_dim = getattr(node, 'return_dimension', None)
         effective_return = node.return_type

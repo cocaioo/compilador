@@ -1,6 +1,6 @@
 class CalculosRetangulo {
     real x;
-    real y
+    real y;
 
     CalculosRetangulo constructor(real x, real y) {
         this.x = x;

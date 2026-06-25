@@ -427,15 +427,32 @@ def p_class_declaration(p):
     attrs = []
     constructor = None
     methods = []
+    seen_constructor = False
+    seen_method = False
+    order_error = False
     for m in p[4]:
         if m is None:
             continue
         if isinstance(m, VarDeclarationNode):
+            if seen_constructor or seen_method:
+                order_error = True
             attrs.append(m)
         elif isinstance(m, ClassConstructorNode):
+            if seen_method:
+                order_error = True
+            seen_constructor = True
             constructor = m
         elif isinstance(m, FunctionNode):
+            seen_method = True
             methods.append(m)
+    if order_error:
+        msg = f"ordem incorreta de declaracao na classe '{p[2]}'. Os atributos devem vir antes do construtor, e o construtor antes dos metodos."
+        line = p.lineno(1)
+        lexpos = p.lexpos(1)
+        formatted = format_visual_error(p.lexer.lexdata, "Erro Sintatico", msg, line, lexpos)
+        if not hasattr(parser, 'errors'):
+            parser.errors = []
+        parser.errors.append(formatted)
     p[0] = ClassDeclarationNode(name=p[2], attributes=attrs, constructor=constructor, methods=methods)
 
 def p_class_member_list(p):
