@@ -15,7 +15,42 @@ from frontend.ast_nodes import (
     StringNode, BooleanNode, NullNode, IdentifierNode
 )
 
-# Definição de precedência baseada na tabela da especificação
+# Wrapper para coletar multiplos erros e levantar uma unica excecao ao final
+class _ParserWrapper:
+    def __init__(self, real_parser):
+        object.__setattr__(self, '_real', real_parser)
+        real_parser.errors = []
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, '_real'), name)
+    def __setattr__(self, name, value):
+        setattr(object.__getattribute__(self, '_real'), name, value)
+    def parse(self, input_data, *args, **kwargs):
+        real = object.__getattribute__(self, '_real')
+        real.errors = []
+        real.source_code = input_data
+        lexer = kwargs.get('lexer')
+        if lexer:
+            lexer.errors = []
+            lexer.source_code = input_data
+            lexer.collect_errors = True
+        ast = real.parse(input_data, *args, **kwargs)
+        all_errors = []
+        if lexer and hasattr(lexer, 'errors') and lexer.errors:
+            all_errors.extend(lexer.errors)
+        if real.errors:
+            all_errors.extend(real.errors)
+        if lexer:
+            lexer.collect_errors = False
+        if all_errors:
+            seen = set()
+            unique = []
+            for e in all_errors:
+                if e not in seen:
+                    seen.add(e)
+                    unique.append(e)
+            raise SyntacticError("\n" + "\n\n".join(unique))
+        return ast
+
 precedence = (
     ('right', 'ASSIGN', 'PLUS_ASSIGN', 'MINUS_ASSIGN', 'TIMES_ASSIGN', 'DIVIDE_ASSIGN', 'MOD_ASSIGN'),
     ('left', 'OR'),
@@ -31,7 +66,6 @@ precedence = (
     ('nonassoc', 'ELSE'),
 )
 
-# Regra inicial do compilador
 def p_program(p):
     'program : statement_list'
     p[0] = ProgramNode(p[1])
@@ -58,12 +92,6 @@ def p_statement_error_semicolon(p):
     p[0] = None
     p.parser.errok()
 
-def p_statement_error_rbrace(p):
-    'statement : error RBRACE'
-    p[0] = None
-    p.parser.errok()
-
-# Comandos válidos na linguagem
 def p_statement(p):
     '''statement : var_declaration
                  | if_statement
@@ -79,7 +107,6 @@ def p_statement(p):
                  | expression_statement'''
     p[0] = p[1]
 
-# Tipos primitivos e derivados
 def p_type(p):
     '''type : INT_TYPE
             | REAL_TYPE
@@ -88,7 +115,6 @@ def p_type(p):
             | ID'''
     p[0] = 'real' if p[1] in ('real', 'float') else p[1]
 
-# Tipo de retorno de função (pode ser void)
 def p_return_type(p):
     '''return_type : type
                    | VOID_TYPE'''
@@ -110,7 +136,6 @@ def p_dimension_list(p):
     else:
         p[0] = p[1] + [p[3]]
 
-# Declaração de variáveis e vetores
 def p_var_declaration_no_semicolon(p):
     '''var_declaration_no_semicolon : LET type ID ASSIGN expression
                                      | CONST type ID ASSIGN expression
@@ -120,21 +145,17 @@ def p_var_declaration_no_semicolon(p):
                                      | LET type id_list'''
     is_const = (p[1] == 'const')
     if len(p) == 4:
-        # LET type id_list
         if len(p[3]) == 1:
             p[0] = VarDeclarationNode(var_type=p[2], name=p[3][0], value=None, is_const=is_const, dimension=None)
         else:
             p[0] = [VarDeclarationNode(var_type=p[2], name=name, value=None, is_const=is_const, dimension=None) for name in p[3]]
     elif len(p) == 5:
-        # LET type dimension_list ID
         dims = p[3]
         dimension = dims[0] if len(dims) == 1 else dims
         p[0] = VarDeclarationNode(var_type=p[2], name=p[4], value=None, is_const=is_const, dimension=dimension)
     elif len(p) == 6:
-        # LET/CONST type ID ASSIGN expression
         p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=p[5], is_const=is_const, dimension=None)
     elif len(p) == 7:
-        # LET/CONST type dimension_list ID ASSIGN expression
         dims = p[3]
         dimension = dims[0] if len(dims) == 1 else dims
         p[0] = VarDeclarationNode(var_type=p[2], name=p[4], value=p[6], is_const=is_const, dimension=dimension)
@@ -143,7 +164,6 @@ def p_var_declaration(p):
     'var_declaration : var_declaration_no_semicolon SEMICOLON'
     p[0] = p[1]
 
-# Expressões e atribuições
 def p_expression_assignment(p):
     '''expression : expression ASSIGN expression
                   | expression PLUS_ASSIGN expression
@@ -155,7 +175,7 @@ def p_expression_assignment(p):
         msg = "atribuicao para alvo invalido."
         line = p.lineno(2)
         lexpos = p.lexpos(2)
-        formatted = format_visual_error(p.lexer.lexdata, "Erro Sintático", msg, line, lexpos)
+        formatted = format_visual_error(p.lexer.lexdata, "Erro Sintatico", msg, line, lexpos)
         if not hasattr(parser, 'errors'):
             parser.errors = []
         parser.errors.append(formatted)
@@ -189,7 +209,7 @@ def p_expression_unary(p):
             msg = f"operador {p[1]} requer um alvo valido."
             line = p.lineno(1)
             lexpos = p.lexpos(1)
-            formatted = format_visual_error(p.lexer.lexdata, "Erro Sintático", msg, line, lexpos)
+            formatted = format_visual_error(p.lexer.lexdata, "Erro Sintatico", msg, line, lexpos)
             if not hasattr(parser, 'errors'):
                 parser.errors = []
             parser.errors.append(formatted)
@@ -245,7 +265,6 @@ def p_expression_array_literal(p):
     'expression : LBRACKET argument_list RBRACKET'
     p[0] = ArrayLiteralNode(p[2])
 
-# Conversões (Casting)
 def p_expression_cast(p):
     '''expression : INT_TYPE LPAREN expression RPAREN
                   | REAL_TYPE LPAREN expression RPAREN
@@ -254,7 +273,6 @@ def p_expression_cast(p):
     target = 'real' if p[1] in ('real', 'float') else p[1]
     p[0] = CastNode(target_type=target, expression=p[3])
 
-# Listas de argumentos para chamadas
 def p_argument_list(p):
     '''argument_list : empty
                      | argument_list_nonempty'''
@@ -268,7 +286,6 @@ def p_argument_list_nonempty(p):
     else:
         p[0] = p[1] + [p[3]]
 
-# Estruturas de controle de fluxo
 def p_if_statement(p):
     '''if_statement : IF LPAREN expression RPAREN statement %prec IFX
                     | IF LPAREN expression RPAREN statement ELSE statement'''
@@ -308,13 +325,14 @@ def p_break_statement(p):
 
 def p_block(p):
     '''block : LBRACE statement_list RBRACE
-             | LBRACE RBRACE'''
-    if len(p) == 4:
+             | LBRACE RBRACE
+             | LBRACE error RBRACE'''
+    if len(p) == 4 and isinstance(p[2], list):
         p[0] = BlockNode(p[2])
     else:
         p[0] = BlockNode([])
+    p.parser.errok()
 
-# Declaração de funções
 def p_function_declaration(p):
     'function_declaration : FUNCTION return_type ID LPAREN param_list RPAREN block'
     p[0] = FunctionNode(return_type=p[2], name=p[3], params=p[5], body=p[7])
@@ -344,7 +362,6 @@ def p_return_statement(p):
     else:
         p[0] = ReturnNode(expression=None)
 
-# Declaração de Classes
 def p_class_declaration(p):
     'class_declaration : CLASS ID LBRACE class_attribute_list class_constructor class_method_list RBRACE'
     p[0] = ClassDeclarationNode(name=p[2], attributes=p[4], constructor=p[5], methods=p[6])
@@ -390,7 +407,6 @@ def p_class_method(p):
     'class_method : return_type ID LPAREN param_list RPAREN block'
     p[0] = FunctionNode(return_type=p[1], name=p[2], params=p[4], body=p[6])
 
-# Comandos de Funções Nativas
 def p_console_log_statement(p):
     'console_log_statement : CONSOLE_LOG LPAREN argument_list RPAREN SEMICOLON'
     p[0] = ConsoleLogNode(expressions=p[3])
@@ -402,7 +418,7 @@ def p_input_statement(p):
             msg = "input requer alvos validos."
             line = p.lineno(1)
             lexpos = p.lexpos(1)
-            formatted = format_visual_error(p.lexer.lexdata, "Erro Sintático", msg, line, lexpos)
+            formatted = format_visual_error(p.lexer.lexdata, "Erro Sintatico", msg, line, lexpos)
             if not hasattr(parser, 'errors'):
                 parser.errors = []
             parser.errors.append(formatted)
@@ -412,38 +428,36 @@ def p_expression_statement(p):
     'expression_statement : expression SEMICOLON'
     p[0] = p[1]
 
-# Regras auxiliares
 def p_empty(p):
     'empty :'
     pass
 
-# Mapeamento de tokens para termos amigáveis em português
 TOKEN_TRANSLATIONS = {
-    'SEMICOLON': "';' (ponto e vírgula)",
-    'LPAREN': "'(' (abrir parêntese)",
-    'RPAREN': "')' (fechar parêntese)",
+    'SEMICOLON': "';' (ponto e virgula)",
+    'LPAREN': "'(' (abrir parentese)",
+    'RPAREN': "')' (fechar parentese)",
     'LBRACKET': "'[' (abrir colchete)",
     'RBRACKET': "']' (fechar colchete)",
     'LBRACE': "'{' (abrir chave)",
     'RBRACE': "'}' (fechar chave)",
-    'COMMA': "',' (vírgula)",
+    'COMMA': "',' (virgula)",
     'DOT': "'.' (ponto)",
-    'ASSIGN': "'=' (atribuição)",
+    'ASSIGN': "'=' (atribuicao)",
     'PLUS': "'+' (soma)",
-    'MINUS': "'-' (subtração)",
-    'TIMES': "'*' (multiplicação)",
-    'DIVIDE': "'/' (divisão)",
+    'MINUS': "'-' (subtracao)",
+    'TIMES': "'*' (multiplicacao)",
+    'DIVIDE': "'/' (divisao)",
     'MOD': "'%' (resto)",
-    'POWER': "'**' (potência)",
+    'POWER': "'**' (potencia)",
     'EQ': "'==' (igualdade)",
     'NE': "'!=' (diferente de)",
     'GT': "'>' (maior que)",
     'GE': "'>=' (maior ou igual a)",
     'LT': "'<' (menor que)",
     'LE': "'<=' (menor ou igual a)",
-    'AND': "'&&' (E lógico)",
-    'OR': "'||' (OU lógico)",
-    'NOT': "'!' (negação)",
+    'AND': "'&&' (E logico)",
+    'OR': "'||' (OU logico)",
+    'NOT': "'!' (negacao)",
     'LET': "a palavra-chave 'let'",
     'CONST': "a palavra-chave 'const'",
     'IF': "a palavra-chave 'if'",
@@ -464,29 +478,25 @@ TOKEN_TRANSLATIONS = {
     'BOOL_TYPE': "o tipo 'bool'",
     'STR_TYPE': "o tipo 'string'",
     'VOID_TYPE': "o tipo 'void'",
-    'ID': "um identificador (nome de variável, função ou classe)",
-    'INT_LITERAL': "um número inteiro",
-    'REAL_LITERAL': "um número real",
+    'ID': "um identificador (nome de variavel, funcao ou classe)",
+    'INT_LITERAL': "um numero inteiro",
+    'REAL_LITERAL': "um numero real",
     'STRING_LITERAL': "um texto (string)",
     'TRUE': "o valor 'true'",
     'FALSE': "o valor 'false'",
     'NULL': "o valor 'null'",
 }
 
-# Tratamento de erro sintático
 def p_error(p):
-    # Obtém o estado atual da máquina de estados do yacc
     try:
         state = parser.statestack[-1]
         raw_expected = list(parser.action[state].keys())
     except (NameError, AttributeError, IndexError):
         raw_expected = []
 
-    # Determinar a linha
     if p:
         line_num = p.lineno
     else:
-        # Se for fim do arquivo, tenta resgatar a última linha válida do lexer ou da pilha
         line_num = "final"
         try:
             if len(parser.symstack) > 1:
@@ -505,16 +515,14 @@ def p_error(p):
         unexpected = "fim de arquivo inesperado"
         token_type = "EOF"
 
-    # Verificações de contexto avançadas para mensagens extremamente precisas
     try:
         sym_types = [getattr(sym, 'type', sym) for sym in parser.symstack] if hasattr(parser, 'symstack') else []
     except Exception:
         sym_types = []
 
     err_msg = None
-    error_class = "Erro Sintático"
+    error_class = "Erro Sintatico"
 
-    # 1. Declaração de variável estilo C/Java sem let/const (ex: int x = 10;)
     if token_type == 'ID' and len(sym_types) >= 2 and 'CLASS' not in sym_types and 'LET' not in sym_types and 'CONST' not in sym_types:
         last_sym_type = sym_types[-1]
         if last_sym_type in ('INT_TYPE', 'REAL_TYPE', 'STR_TYPE', 'BOOL_TYPE', 'ID'):
@@ -524,20 +532,18 @@ def p_error(p):
                 last_sym_val = last_sym_type
             err_msg = (
                 f"token inesperado '{p.value}'. "
-                f"Para declarar uma variável, utilize a palavra-chave 'let' ou 'const' (ex: 'let {last_sym_val} {p.value};')."
+                f"Para declarar uma variavel, utilize a palavra-chave 'let' ou 'const' (ex: 'let {last_sym_val} {p.value};')."
             )
 
-    # 2. Uso de incremento/decremento pós-fixado (ex: x++ ou x--)
     elif token_type in ('INCREMENT', 'DECREMENT'):
         op_symbol = p.value if p else ('++' if token_type == 'INCREMENT' else '--')
         op_name = "incremento" if token_type == 'INCREMENT' else "decremento"
         err_msg = (
             f"token inesperado '{op_symbol}'. "
-            f"Em JSS, o operador de {op_name} ({op_symbol}) deve ser utilizado apenas de forma pré-fixada (ex: '{op_symbol}variavel' em vez de 'variavel{op_symbol}')."
+            f"Em JSS, o operador de {op_name} ({op_symbol}) deve ser utilizado apenas de forma pre-fixada (ex: '{op_symbol}variavel' em vez de 'variavel{op_symbol}')."
         )
-        error_class = "Erro Sintático (Confusão Léxica)"
+        error_class = "Erro Sintatico (Confusao Lexica)"
 
-    # 3. Vetor declarado com colchetes no lugar errado (ex: let int x[10];)
     elif token_type == 'LBRACKET' and len(sym_types) >= 4:
         if sym_types[-3:] == ['LET', 'type', 'ID']:
             try:
@@ -548,18 +554,15 @@ def p_error(p):
                 id_name = "vetor"
             err_msg = (
                 f"token inesperado '['. "
-                f"Em JSS, os colchetes de declaração de vetores devem vir antes do nome da variável (ex: 'let {type_name}[10] {id_name};')."
+                f"Em JSS, os colchetes de declaracao de vetores devem vir antes do nome da variavel (ex: 'let {type_name}[10] {id_name};')."
             )
 
-    # 4. Método/função declarado antes do construtor na classe
     elif 'CLASS' in sym_types and 'class_constructor' not in sym_types:
-        # Caso A: Falha ao encontrar '(' após 'tipo nome' (ex: class A { int area() ... })
         is_method_signature = (
             token_type == 'LPAREN' and 
             len(sym_types) >= 2 and 
             (sym_types[-2:] == ['type', 'ID'] or sym_types[-2:] == ['ID', 'ID'])
         )
-        # Caso B: Falha ao encontrar tipo de retorno inválido para atributo mas válido para método (ex: class A { void area() ... })
         is_void_method = (
             token_type in ('VOID_TYPE', 'FUNCTION') and
             len(sym_types) >= 1 and
@@ -568,20 +571,18 @@ def p_error(p):
         if is_method_signature or is_void_method:
             err_msg = (
                 f"token inesperado {unexpected}. "
-                "Toda classe em JSS deve obrigatoriamente definir um construtor antes de declarar seus métodos."
+                "Toda classe em JSS deve obrigatoriamente definir um construtor antes de declarar seus metodos."
             )
 
-    # 5. Falta de tipo na declaração de variável (ex: let x = 10; ou let x;)
     elif token_type in ('ASSIGN', 'SEMICOLON', 'PLUS_ASSIGN', 'MINUS_ASSIGN', 'TIMES_ASSIGN', 'DIVIDE_ASSIGN', 'MOD_ASSIGN') and len(sym_types) >= 2:
         if sym_types[-2:] in (['LET', 'ID'], ['CONST', 'ID']):
             var_name = getattr(parser.symstack[-1], 'value', 'x')
             keyword = sym_types[-2].lower()
             err_msg = (
                 f"token inesperado '{p.value}'. "
-                f"Ausência de tipo na declaração da variável. Em JSS, o tipo deve ser explicitado (ex: '{keyword} int {var_name} = ...' ou '{keyword} int {var_name};')."
+                f"Ausencia de tipo na declaracao da variavel. Em JSS, o tipo deve ser explicitado (ex: '{keyword} int {var_name} = ...' ou '{keyword} int {var_name};')."
             )
 
-    # 6. Ordem de declaração invertida (ex: int let x = 10;)
     elif token_type in ('LET', 'CONST') and len(sym_types) >= 1 and 'CLASS' not in sym_types and 'LET' not in sym_types and 'CONST' not in sym_types:
         last_sym_type = sym_types[-1]
         if last_sym_type in ('INT_TYPE', 'REAL_TYPE', 'STR_TYPE', 'BOOL_TYPE', 'ID'):
@@ -591,10 +592,9 @@ def p_error(p):
                 last_sym_val = last_sym_type
             err_msg = (
                 f"token inesperado '{p.value}'. "
-                f"A ordem de declaração de variáveis em JSS exige a palavra-chave antes do tipo (ex: '{p.value} {last_sym_val} variavel;' em vez de '{last_sym_val} {p.value} variavel;')."
+                f"A ordem de declaracao de variaveis em JSS exige a palavra-chave antes do tipo (ex: '{p.value} {last_sym_val} variavel;' em vez de '{last_sym_val} {p.value} variavel;')."
             )
 
-    # 7. Tentativa de usar palavra reservada como identificador
     elif token_type in (
         'LET', 'CONST', 'FUNCTION', 'IF', 'ELSE', 'WHILE', 'FOR', 'BREAK', 'RETURN', 
         'CLASS', 'CONSTRUCTOR', 'NEW', 'THIS', 'NULL', 'TRUE', 'FALSE', 'INT_TYPE', 
@@ -604,40 +604,37 @@ def p_error(p):
         if 'ID' in clean_expected:
             err_msg = (
                 f"token inesperado '{p.value}'. "
-                f"O nome '{p.value}' é uma palavra reservada da linguagem e não pode ser utilizado como identificador."
+                f"O nome '{p.value}' e uma palavra reservada da linguagem e nao pode ser utilizado como identificador."
             )
 
-    # Se não foi capturado por nenhum caso de contexto, gera a orientação genérica
     if err_msg is None:
         expected_str = ""
         if raw_expected:
             clean_expected = [t for t in raw_expected if t != '$end' and not t.startswith('error')]
             
-            # Tratamento especial de EOF (fim de arquivo)
             if token_type == "EOF":
                 if 'SEMICOLON' in clean_expected and len(clean_expected) > 10:
                     expected_str = " Talvez esteja faltando um ';'."
                 elif 'RBRACE' in clean_expected:
                     expected_str = " Talvez esteja faltando fechar uma chave '}'."
                 elif 'RPAREN' in clean_expected:
-                    expected_str = " Talvez esteja faltando fechar um parêntese ')'."
+                    expected_str = " Talvez esteja faltando fechar um parentese ')'."
                 elif 'RBRACKET' in clean_expected:
                     expected_str = " Talvez esteja faltando fechar um colchete ']'."
             
             if not expected_str and clean_expected:
-                # Traduz os tokens esperados
                 translated = []
                 for t in clean_expected:
                     if t == 'ID':
                         if 'LET' in sym_types or 'CONST' in sym_types or (len(sym_types) >= 1 and sym_types[-1] in ('type', 'RBRACKET')):
-                            translated.append("um nome de variável")
+                            translated.append("um nome de variavel")
                         elif 'FUNCTION' in sym_types:
-                            translated.append("um nome de função")
+                            translated.append("um nome de funcao")
                         elif 'CLASS' in sym_types:
                             if token_type == 'CONSTRUCTOR':
                                 translated.append("o nome da classe (para o construtor)")
                             else:
-                                translated.append("um identificador (nome de atributo, método ou classe)")
+                                translated.append("um identificador (nome de atributo, metodo ou classe)")
                         elif len(sym_types) >= 1 and sym_types[-1] == 'CLASS':
                             translated.append("um nome de classe")
                         else:
@@ -647,7 +644,6 @@ def p_error(p):
                     else:
                         translated.append(f"'{t.lower()}'")
 
-                # Remove duplicatas mantendo ordem
                 unique_translated = []
                 for item in translated:
                     if item not in unique_translated:
@@ -684,24 +680,23 @@ def p_error(p):
                             base_str = f"{', '.join(suggestions[:-1])} ou {suggestions[-1]}"
 
                         if has_statement_starters and not has_operators:
-                            expected_str = f" Esperava-se {base_str} (ou o início de uma nova instrução)."
+                            expected_str = f" Esperava-se {base_str} (ou o inicio de uma nova instrucao)."
                         elif has_operators and not has_statement_starters:
-                            expected_str = f" Esperava-se {base_str} (ou a continuação da expressão)."
+                            expected_str = f" Esperava-se {base_str} (ou a continuacao da expressao)."
                         elif has_operators and has_statement_starters:
-                            expected_str = f" Esperava-se {base_str} (ou a continuação da expressão / início de uma nova instrução)."
+                            expected_str = f" Esperava-se {base_str} (ou a continuacao da expressao / inicio de uma nova instrucao)."
                         else:
                             expected_str = f" Esperava-se {base_str}."
                     else:
                         if has_statement_starters and not has_operators:
-                            expected_str = " Esperava-se um novo comando ou instrução válida."
+                            expected_str = " Esperava-se um novo comando ou instrucao valida."
                         elif has_operators and not has_statement_starters:
-                            expected_str = " Esperava-se a continuação da expressão."
+                            expected_str = " Esperava-se a continuacao da expressao."
                         else:
-                            expected_str = " Esperava-se uma expressão ou comando válido."
+                            expected_str = " Esperava-se uma expressao ou comando valido."
 
         err_msg = f"token inesperado {unexpected}.{expected_str}"
 
-    # Formatar o erro visualmente
     if p:
         lexpos = p.lexpos
         source_code = p.lexer.lexdata
@@ -714,50 +709,13 @@ def p_error(p):
     if not hasattr(parser, 'errors'):
         parser.errors = []
     
-    # Evitar duplicar a mesma mensagem de erro na sequência devido a recuperações repetitivas no mesmo token
     if not parser.errors or parser.errors[-1] != formatted:
         parser.errors.append(formatted)
 
-# Inicialização do parser do PLY
-parser = yacc.yacc()
-parser.errors = []
-
-# Wrapper para coletar múltiplos erros e levantar uma única exceção ao final
-_orig_parse = parser.parse
-
-def custom_parse(input_data, *args, **kwargs):
-    parser.errors = []
-    parser.source_code = input_data
-
-    # Inicializar a lista de erros no lexer e ativar modo de coleta
-    lexer = kwargs.get('lexer')
-    if lexer:
-        lexer.errors = []
-        lexer.source_code = input_data
-        lexer.collect_errors = True
-
-    ast = _orig_parse(input_data, *args, **kwargs)
-
-    # Agregar todos os erros de ambas as fases (léxica e sintática)
-    all_errors = []
-    if lexer and hasattr(lexer, 'errors') and lexer.errors:
-        all_errors.extend(lexer.errors)
-    if parser.errors:
-        all_errors.extend(parser.errors)
-
-    # Desativar modo de coleta do lexer
-    if lexer:
-        lexer.collect_errors = False
-
-    if all_errors:
-        # Deduplica erros idênticos mantendo ordem
-        seen = set()
-        unique = []
-        for e in all_errors:
-            if e not in seen:
-                seen.add(e)
-                unique.append(e)
-        raise SyntacticError("\n" + "\n\n".join(unique))
-    return ast
-
-parser.parse = custom_parse
+import os as _os, tempfile as _tmpmod
+_real_parser = yacc.yacc(
+    outputdir=_tmpmod.gettempdir(),
+    tabmodule='_jss_parsetab',
+    debuglog=yacc.PlyLogger(open(_os.devnull, 'w')),
+)
+parser = _ParserWrapper(_real_parser)

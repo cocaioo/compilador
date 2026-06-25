@@ -64,12 +64,41 @@ def test_multiple_syntax_errors():
         if errors_count != 3:
             raise AssertionError(f"Esperava exatamente 3 erros sintaticos, mas obteve {errors_count}:\n{message}")
         
-        if "token inesperado 'y'" not in message.lower():
-            raise AssertionError(f"Falta erro de 'y' inesperado:\n{message}")
-        if "token inesperado 'z'" not in message.lower():
-            raise AssertionError(f"Falta erro de 'z' inesperado:\n{message}")
-        if "utilize a palavra-chave 'let' ou 'const'" not in message.lower():
+        if "token inesperado \'y\'" not in message.lower():
+            raise AssertionError(f"Falta erro de \'y\' inesperado:\n{message}")
+        if "token inesperado \'z\'" not in message.lower():
+            raise AssertionError(f"Falta erro de \'z\' inesperado:\n{message}")
+        if "utilize a palavra-chave \'let\' ou \'const\'" not in message.lower():
             raise AssertionError(f"Falta erro de declaracao C-style:\n{message}")
+        return
+    raise AssertionError("Deveria ter gerado erro sintatico")
+
+
+def test_brace_error_recovery_multi():
+    source = """
+    function void main() {
+        {
+            let int a =
+        }
+        let int b = 20;
+        {
+            let int x = 10 y;
+        }
+        let int c = 30;
+    }
+    """
+    try:
+        parse_code(source)
+    except SyntacticError as exc:
+        message = str(exc)
+        errors_count = message.lower().count("erro sin")
+        if errors_count != 2:
+            raise AssertionError(f"Esperava exatamente 2 erros sintaticos com recuperacao de chaves, mas obteve {errors_count}:\n{message}")
+        
+        if "token inesperado '}'" not in message.lower():
+            raise AssertionError(f"Falta erro do bloco 1:\n{message}")
+        if "token inesperado 'y'" not in message.lower():
+            raise AssertionError(f"Falta erro do bloco 2:\n{message}")
         return
     raise AssertionError("Deveria ter gerado erro sintatico")
 
@@ -89,8 +118,11 @@ def main():
     for path in invalid_files:
         assert_invalid_file(path)
 
-    # Executar teste específico de múltiplos erros sintáticos
+    # Executar teste especifico de multiplos erros sintaticos
     test_multiple_syntax_errors()
+
+    # Executar teste especifico de multiplos erros com recuperacao de chaves
+    test_brace_error_recovery_multi()
 
     print("OK: testes do parser passaram.")
 
