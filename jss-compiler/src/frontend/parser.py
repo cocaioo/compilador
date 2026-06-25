@@ -4,6 +4,7 @@ Responsavel por validar a gramatica, construir a AST e reportar erros sintaticos
 """
 
 import ply.yacc as yacc
+import ply.lex as lex
 from frontend.lexer import tokens
 from frontend.errors import SyntacticError, format_visual_error
 from frontend.ast_nodes import (
@@ -14,6 +15,31 @@ from frontend.ast_nodes import (
     NewObjectNode, ConsoleLogNode, InputNode, CastNode, NumberNode,
     StringNode, BooleanNode, NullNode, IdentifierNode
 )
+
+# Proxy de lexer com buffer de push-back para recuperacao de erros.
+# O PLY captura lexer.token no inicio de parse(); por isso, o token devolvido
+# precisa passar pelo mesmo objeto usado pelo parser.
+class _BufferedLexer:
+    def __init__(self, lexer):
+        self._lexer = lexer
+        self._pending = []
+
+    def token(self):
+        if self._pending:
+            return self._pending.pop(0)
+        return self._lexer.token()
+
+    def push_token(self, tok):
+        self._pending.append(tok)
+
+    def __getattr__(self, name):
+        return getattr(self._lexer, name)
+
+    def __setattr__(self, name, value):
+        if name in ('_lexer', '_pending'):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._lexer, name, value)
 
 # Wrapper para coletar multiplos erros e levantar uma unica excecao ao final
 class _ParserWrapper:
@@ -28,19 +54,26 @@ class _ParserWrapper:
         real = object.__getattribute__(self, '_real')
         real.errors = []
         real.source_code = input_data
+        real.last_ast = None
+        real._buf_lexer = None
         lexer = kwargs.get('lexer')
         if lexer:
             lexer.errors = []
             lexer.source_code = input_data
             lexer.collect_errors = True
-        ast = real.parse(input_data, *args, **kwargs)
+            buf_lexer = _BufferedLexer(lexer)
+            kwargs['lexer'] = buf_lexer
+            real._buf_lexer = buf_lexer
+        try:
+            ast = real.parse(input_data, *args, **kwargs)
+        finally:
+            if lexer:
+                lexer.collect_errors = False
         all_errors = []
         if lexer and hasattr(lexer, 'errors') and lexer.errors:
             all_errors.extend(lexer.errors)
         if real.errors:
             all_errors.extend(real.errors)
-        if lexer:
-            lexer.collect_errors = False
         if all_errors:
             seen = set()
             unique = []
@@ -553,6 +586,62 @@ def p_error(p):
     except (NameError, AttributeError, IndexError):
         raw_expected = []
 
+    # Recuperacao de ponto-e-virgula ausente.
+    # Quando a expressao ja foi reduzida e o token atual inicia outro statement,
+    # inserimos um ';' sintetico e recolocamos o token atual no lexer.
+    STATEMENT_START_TOKENS = {
+        'LET', 'CONST', 'FUNCTION', 'IF', 'ELSE', 'WHILE', 'FOR', 'BREAK',
+        'RETURN', 'CLASS', 'CONSOLE_LOG', 'INPUT', 'ID', 'INT_LITERAL',
+        'REAL_LITERAL', 'STRING_LITERAL', 'TRUE', 'FALSE', 'NULL',
+        'LPAREN', 'INCREMENT', 'DECREMENT', 'NOT', 'NEW', 'LBRACE', 'RBRACE',
+    }
+    if 'SEMICOLON' in raw_expected:
+        buf = getattr(parser, '_buf_lexer', None)
+        if p and p.type in STATEMENT_START_TOKENS and buf:
+            source_code = getattr(p.lexer, 'lexdata', '')
+            formatted = format_visual_error(
+                source_code,
+                "Erro Sintatico",
+                f"token inesperado '{p.value}'. ';' ausente antes de '{p.value}'.",
+                p.lineno,
+                p.lexpos
+            )
+            if not hasattr(parser, 'errors'):
+                parser.errors = []
+            if not parser.errors or parser.errors[-1] != formatted:
+                parser.errors.append(formatted)
+            semi = lex.LexToken()
+            semi.type = 'SEMICOLON'
+            semi.value = ';'
+            semi.lineno = p.lineno
+            semi.lexpos = p.lexpos
+            parser.errok()
+            buf.push_token(p)
+            return semi
+        elif p is None:
+            # EOF quando esperava ';': inserir ';' sintetico para fechar o statement.
+            source_code = getattr(parser, 'source_code', '')
+            lexpos = len(source_code.rstrip('\r\n'))
+            last_line = source_code.count('\n', 0, lexpos) + 1
+            formatted = format_visual_error(
+                source_code,
+                "Erro Sintatico",
+                "';' ausente no final do arquivo.",
+                last_line,
+                lexpos
+            )
+            if not hasattr(parser, 'errors'):
+                parser.errors = []
+            if not parser.errors or parser.errors[-1] != formatted:
+                parser.errors.append(formatted)
+            semi = lex.LexToken()
+            semi.type = 'SEMICOLON'
+            semi.value = ';'
+            semi.lineno = last_line
+            semi.lexpos = lexpos
+            parser.errok()
+            return semi
+
     if p:
         line_num = p.lineno
     else:
@@ -775,6 +864,8 @@ import os as _os, tempfile as _tmpmod
 _real_parser = yacc.yacc(
     outputdir=_tmpmod.gettempdir(),
     tabmodule='_jss_parsetab',
+    debug=False,
     debuglog=yacc.PlyLogger(open(_os.devnull, 'w')),
+    errorlog=yacc.PlyLogger(open(_os.devnull, 'w')),
 )
 parser = _ParserWrapper(_real_parser)
