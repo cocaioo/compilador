@@ -94,6 +94,7 @@ def main():
         else:
             lex_syn_errors.append(f"Erro lexico: {le}")
         has_error = True
+        ast = getattr(parser, 'last_ast', None)
     except SyntacticError as se:
         # A exceção já contém todos os erros léxicos/sintáticos agregados
         for err in str(se).strip().split("\n\n"):
@@ -101,8 +102,9 @@ def main():
             if err:
                 lex_syn_errors.append(err)
         has_error = True
+        ast = getattr(parser, 'last_ast', None)
 
-    # Fase 2: Análise Semântica (somente se a AST foi gerada)
+    # Fase 2: Análise Semântica (mesmo com erros léxicos/sintáticos, se a AST parcial existe)
     if ast:
         try:
             analyzer = SemanticAnalyzer()

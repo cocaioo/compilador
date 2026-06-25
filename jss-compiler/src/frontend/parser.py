@@ -48,6 +48,7 @@ class _ParserWrapper:
                 if e not in seen:
                     seen.add(e)
                     unique.append(e)
+            real.last_ast = ast
             raise SyntacticError("\n" + "\n\n".join(unique))
         return ast
 
@@ -314,6 +315,11 @@ def p_for_statement(p):
     'for_statement : FOR LPAREN for_init SEMICOLON expression_opt SEMICOLON expression_opt RPAREN block'
     init = BlockNode(p[3]) if isinstance(p[3], list) else p[3]
     p[0] = ForNode(init=init, condition=p[5], update=p[7], body=p[9])
+
+def p_for_statement_error(p):
+    'for_statement : FOR LPAREN error RPAREN block'
+    p[0] = ForNode(init=None, condition=None, update=None, body=p[5])
+    p.parser.errok()
 
 def p_break_statement(p):
     'break_statement : BREAK SEMICOLON'
