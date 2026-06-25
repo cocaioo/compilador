@@ -333,6 +333,11 @@ def p_function_declaration(p):
     'function_declaration : FUNCTION return_type ID LPAREN param_list RPAREN block'
     p[0] = FunctionNode(return_type=p[2], name=p[3], params=p[5], body=p[7])
 
+def p_function_declaration_error(p):
+    'function_declaration : FUNCTION return_type ID LPAREN param_list RPAREN error RBRACE'
+    p[0] = FunctionNode(return_type=p[2], name=p[3], params=p[5], body=BlockNode([]))
+    p.parser.errok()
+
 def p_param_list(p):
     '''param_list : empty
                   | param_list_nonempty'''
@@ -359,16 +364,39 @@ def p_return_statement(p):
         p[0] = ReturnNode(expression=None)
 
 def p_class_declaration(p):
-    'class_declaration : CLASS ID LBRACE class_attribute_list class_constructor class_method_list RBRACE'
-    p[0] = ClassDeclarationNode(name=p[2], attributes=p[4], constructor=p[5], methods=p[6])
+    'class_declaration : CLASS ID LBRACE class_member_list RBRACE'
+    attrs = []
+    constructor = None
+    methods = []
+    for m in p[4]:
+        if m is None:
+            continue
+        if isinstance(m, VarDeclarationNode):
+            attrs.append(m)
+        elif isinstance(m, ClassConstructorNode):
+            constructor = m
+        elif isinstance(m, FunctionNode):
+            methods.append(m)
+    p[0] = ClassDeclarationNode(name=p[2], attributes=attrs, constructor=constructor, methods=methods)
 
-def p_class_attribute_list(p):
-    '''class_attribute_list : empty
-                            | class_attribute_list class_attribute'''
+def p_class_member_list(p):
+    '''class_member_list : empty
+                         | class_member_list class_member'''
     if len(p) == 2:
         p[0] = []
     else:
         p[0] = p[1] + [p[2]]
+
+def p_class_member(p):
+    '''class_member : class_attribute
+                    | class_constructor
+                    | class_method'''
+    p[0] = p[1]
+
+def p_class_member_error(p):
+    'class_member : error RBRACE'
+    p[0] = None
+    p.parser.errok()
 
 def p_class_attribute(p):
     'class_attribute : type ID SEMICOLON'
@@ -377,6 +405,11 @@ def p_class_attribute(p):
 def p_class_constructor(p):
     'class_constructor : ID CONSTRUCTOR LPAREN param_list RPAREN LBRACE constructor_body RBRACE'
     p[0] = ClassConstructorNode(class_name=p[1], params=p[4], body=BlockNode(p[7]))
+
+def p_class_constructor_error(p):
+    'class_constructor : ID CONSTRUCTOR LPAREN param_list RPAREN error RBRACE'
+    p[0] = ClassConstructorNode(class_name=p[1], params=p[4], body=BlockNode([]))
+    p.parser.errok()
 
 def p_constructor_body(p):
     '''constructor_body : empty
@@ -391,17 +424,16 @@ def p_constructor_assignment(p):
     target = AttributeAccessNode(object_expr=IdentifierNode("this"), attribute_name=p[3])
     p[0] = AssignmentNode(target=target, value=p[5])
 
-def p_class_method_list(p):
-    '''class_method_list : empty
-                         | class_method_list class_method'''
-    if len(p) == 2:
-        p[0] = []
-    else:
-        p[0] = p[1] + [p[2]]
-
 def p_class_method(p):
-    'class_method : return_type ID LPAREN param_list RPAREN block'
+    '''class_method : type ID LPAREN param_list RPAREN block
+                    | VOID_TYPE ID LPAREN param_list RPAREN block'''
     p[0] = FunctionNode(return_type=p[1], name=p[2], params=p[4], body=p[6])
+
+def p_class_method_error(p):
+    '''class_method : type ID LPAREN param_list RPAREN error RBRACE
+                    | VOID_TYPE ID LPAREN param_list RPAREN error RBRACE'''
+    p[0] = FunctionNode(return_type=p[1], name=p[2], params=p[4], body=BlockNode([]))
+    p.parser.errok()
 
 def p_console_log_statement(p):
     'console_log_statement : CONSOLE_LOG LPAREN argument_list RPAREN SEMICOLON'
