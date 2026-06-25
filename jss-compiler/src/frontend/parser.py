@@ -330,12 +330,24 @@ def p_block(p):
     p.parser.errok()
 
 def p_function_declaration(p):
-    'function_declaration : FUNCTION return_type ID LPAREN param_list RPAREN block'
-    p[0] = FunctionNode(return_type=p[2], name=p[3], params=p[5], body=p[7])
+    '''function_declaration : FUNCTION return_type ID LPAREN param_list RPAREN block
+                            | FUNCTION type dimension_list ID LPAREN param_list RPAREN block'''
+    if len(p) == 8:
+        p[0] = FunctionNode(return_type=p[2], name=p[3], params=p[5], body=p[7])
+    else:
+        dims = p[3]
+        ret_dim = dims[0] if len(dims) == 1 else dims
+        p[0] = FunctionNode(return_type=p[2], name=p[4], params=p[6], body=p[8], return_dimension=ret_dim)
 
 def p_function_declaration_error(p):
-    'function_declaration : FUNCTION return_type ID LPAREN param_list RPAREN error RBRACE'
-    p[0] = FunctionNode(return_type=p[2], name=p[3], params=p[5], body=BlockNode([]))
+    '''function_declaration : FUNCTION return_type ID LPAREN param_list RPAREN error RBRACE
+                            | FUNCTION type dimension_list ID LPAREN param_list RPAREN error RBRACE'''
+    if len(p) == 9:
+        p[0] = FunctionNode(return_type=p[2], name=p[3], params=p[5], body=BlockNode([]))
+    else:
+        dims = p[3]
+        ret_dim = dims[0] if len(dims) == 1 else dims
+        p[0] = FunctionNode(return_type=p[2], name=p[4], params=p[6], body=BlockNode([]), return_dimension=ret_dim)
     p.parser.errok()
 
 def p_param_list(p):
@@ -352,8 +364,14 @@ def p_param_list_nonempty(p):
         p[0] = p[1] + [p[3]]
 
 def p_param(p):
-    'param : type ID'
-    p[0] = (p[1], p[2])
+    '''param : type ID
+             | type dimension_list ID'''
+    if len(p) == 3:
+        p[0] = (p[1], p[2], None)
+    else:
+        dims = p[2]
+        dimension = dims[0] if len(dims) == 1 else dims
+        p[0] = (p[1], p[3], dimension)
 
 def p_return_statement(p):
     '''return_statement : RETURN expression SEMICOLON
@@ -399,40 +417,45 @@ def p_class_member_error(p):
     p.parser.errok()
 
 def p_class_attribute(p):
-    'class_attribute : type ID SEMICOLON'
-    p[0] = VarDeclarationNode(var_type=p[1], name=p[2], value=None, is_const=False)
+    '''class_attribute : type ID SEMICOLON
+                       | type dimension_list ID SEMICOLON'''
+    if len(p) == 4:
+        p[0] = VarDeclarationNode(var_type=p[1], name=p[2], value=None, is_const=False)
+    else:
+        dims = p[2]
+        dimension = dims[0] if len(dims) == 1 else dims
+        p[0] = VarDeclarationNode(var_type=p[1], name=p[3], value=None, is_const=False, dimension=dimension)
 
 def p_class_constructor(p):
-    'class_constructor : ID CONSTRUCTOR LPAREN param_list RPAREN LBRACE constructor_body RBRACE'
-    p[0] = ClassConstructorNode(class_name=p[1], params=p[4], body=BlockNode(p[7]))
+    'class_constructor : ID CONSTRUCTOR LPAREN param_list RPAREN block'
+    p[0] = ClassConstructorNode(class_name=p[1], params=p[4], body=p[6])
 
 def p_class_constructor_error(p):
     'class_constructor : ID CONSTRUCTOR LPAREN param_list RPAREN error RBRACE'
     p[0] = ClassConstructorNode(class_name=p[1], params=p[4], body=BlockNode([]))
     p.parser.errok()
 
-def p_constructor_body(p):
-    '''constructor_body : empty
-                        | constructor_body constructor_assignment'''
-    if len(p) == 2:
-        p[0] = []
-    else:
-        p[0] = p[1] + [p[2]]
-
-def p_constructor_assignment(p):
-    'constructor_assignment : THIS DOT ID ASSIGN expression SEMICOLON'
-    target = AttributeAccessNode(object_expr=IdentifierNode("this"), attribute_name=p[3])
-    p[0] = AssignmentNode(target=target, value=p[5])
-
 def p_class_method(p):
     '''class_method : type ID LPAREN param_list RPAREN block
-                    | VOID_TYPE ID LPAREN param_list RPAREN block'''
-    p[0] = FunctionNode(return_type=p[1], name=p[2], params=p[4], body=p[6])
+                    | VOID_TYPE ID LPAREN param_list RPAREN block
+                    | type dimension_list ID LPAREN param_list RPAREN block'''
+    if len(p) == 7:
+        p[0] = FunctionNode(return_type=p[1], name=p[2], params=p[4], body=p[6])
+    elif len(p) == 8:
+        dims = p[2]
+        ret_dim = dims[0] if len(dims) == 1 else dims
+        p[0] = FunctionNode(return_type=p[1], name=p[3], params=p[5], body=p[7], return_dimension=ret_dim)
 
 def p_class_method_error(p):
     '''class_method : type ID LPAREN param_list RPAREN error RBRACE
-                    | VOID_TYPE ID LPAREN param_list RPAREN error RBRACE'''
-    p[0] = FunctionNode(return_type=p[1], name=p[2], params=p[4], body=BlockNode([]))
+                    | VOID_TYPE ID LPAREN param_list RPAREN error RBRACE
+                    | type dimension_list ID LPAREN param_list RPAREN error RBRACE'''
+    if len(p) == 8:
+        p[0] = FunctionNode(return_type=p[1], name=p[2], params=p[4], body=BlockNode([]))
+    elif len(p) == 9:
+        dims = p[2]
+        ret_dim = dims[0] if len(dims) == 1 else dims
+        p[0] = FunctionNode(return_type=p[1], name=p[3], params=p[5], body=BlockNode([]), return_dimension=ret_dim)
     p.parser.errok()
 
 def p_console_log_statement(p):

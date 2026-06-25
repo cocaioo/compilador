@@ -143,15 +143,27 @@ class BreakNode(ASTNode):
 
 class FunctionNode(ASTNode):
     """Declaracao de funcao (function <tipo> nome(params) { ... })."""
-    def __init__(self, return_type, name, params, body):
+    def __init__(self, return_type, name, params, body, return_dimension=None):
         self.return_type = return_type
         self.name = name
-        self.params = params  # Lista de tuplas (tipo, nome)
+        self.params = params  # Lista de tuplas (tipo, nome, dimensao)
         self.body = body
+        self.return_dimension = return_dimension
 
     def print_tree(self, indent=0):
-        params_str = ", ".join([f"{p[0]} {p[1]}" for p in self.params])
-        result = self.get_indent(indent) + f"FunctionNode ({self.return_type} {self.name}({params_str})):\n"
+        def fmt_param(p):
+            t, n = p[0], p[1]
+            d = p[2] if len(p) > 2 else None
+            if d is not None:
+                dims = d if isinstance(d, list) else [d]
+                return f"{t}{''.join(f'[{x}]' for x in dims)} {n}"
+            return f"{t} {n}"
+        params_str = ", ".join(fmt_param(p) for p in self.params)
+        ret = self.return_type
+        if self.return_dimension:
+            dims = self.return_dimension if isinstance(self.return_dimension, list) else [self.return_dimension]
+            ret += ''.join(f'[{x}]' for x in dims)
+        result = self.get_indent(indent) + f"FunctionNode ({ret} {self.name}({params_str})):\n"
         result += self.body.print_tree(indent + 1)
         return result
 
@@ -268,7 +280,14 @@ class ClassConstructorNode(ASTNode):
         self.body = body
 
     def print_tree(self, indent=0):
-        params_str = ", ".join([f"{p[0]} {p[1]}" for p in self.params])
+        def fmt_param(p):
+            t, n = p[0], p[1]
+            d = p[2] if len(p) > 2 else None
+            if d is not None:
+                dims = d if isinstance(d, list) else [d]
+                return f"{t}{''.join(f'[{x}]' for x in dims)} {n}"
+            return f"{t} {n}"
+        params_str = ", ".join(fmt_param(p) for p in self.params)
         result = self.get_indent(indent) + f"ClassConstructorNode ({self.class_name} constructor({params_str})):\n"
         result += self.body.print_tree(indent + 1)
         return result

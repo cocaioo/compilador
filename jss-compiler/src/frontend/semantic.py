@@ -120,7 +120,7 @@ class SemanticAnalyzer:
         # 4. Validar dimensões de vetores
         dimension = node.dimension
         if dimension is not None:
-            if node.value and not isinstance(node.value, ArrayLiteralNode):
+            if node.value and not isinstance(node.value, (ArrayLiteralNode, CallNode)):
                 self.error(node, f"atribuicao invalida para vetor '{node.name}'. Vetores devem ser inicializados com literais de vetor.")
             if node.value and isinstance(node.value, ArrayLiteralNode):
                 # Verificar se o tamanho do literal confere com a dimensão declarada
@@ -251,12 +251,18 @@ class SemanticAnalyzer:
                 self.error(node, "a funcao 'main' nao deve possuir parametros.")
 
         # Registrar símbolo da função/método
+        ret_dim = getattr(node, 'return_dimension', None)
+        effective_return = node.return_type
+        if ret_dim is not None:
+            num_ret_dims = len(ret_dim) if isinstance(ret_dim, list) else 1
+            effective_return = node.return_type + ("[]" * num_ret_dims)
         func_sym = Symbol(
             name=node.name,
             type_name=node.return_type,
             is_function=True,
             params=node.params,
-            return_type=node.return_type
+            return_type=effective_return,
+            dimension=ret_dim
         )
 
         if self.current_class:
@@ -277,14 +283,16 @@ class SemanticAnalyzer:
             self.current_scope.define('this', Symbol(name='this', type_name=self.current_class.name))
 
         # Registrar parâmetros
-        for p_type, p_name in node.params:
+        for param in node.params:
+            p_type, p_name = param[0], param[1]
+            p_dim = param[2] if len(param) > 2 else None
             if self.current_scope.lookup_local(p_name):
                 self.error(node, f"parametro '{p_name}' duplicado na funcao '{node.name}'.")
             if p_type not in ('int', 'real', 'str', 'bool'):
                 class_sym = self.global_scope.lookup(p_type)
                 if not class_sym or not class_sym.is_class:
                     self.error(node, f"tipo de parametro '{p_type}' nao definido.")
-            self.current_scope.define(p_name, Symbol(name=p_name, type_name=p_type))
+            self.current_scope.define(p_name, Symbol(name=p_name, type_name=p_type, dimension=p_dim))
 
         self.analyze(node.body)
 
@@ -365,10 +373,12 @@ class SemanticAnalyzer:
         self.current_scope = SymbolTable(parent=self.global_scope)
         self.current_scope.define('this', Symbol(name='this', type_name=node.name))
 
-        for p_type, p_name in node.constructor.params:
+        for param in node.constructor.params:
+            p_type, p_name = param[0], param[1]
+            p_dim = param[2] if len(param) > 2 else None
             if self.current_scope.lookup_local(p_name):
                 self.error(node.constructor, f"parametro '{p_name}' duplicado no construtor.")
-            self.current_scope.define(p_name, Symbol(name=p_name, type_name=p_type))
+            self.current_scope.define(p_name, Symbol(name=p_name, type_name=p_type, dimension=p_dim))
 
         self.analyze(node.constructor.body)
 
@@ -425,7 +435,12 @@ class SemanticAnalyzer:
             return func_sym.return_type if func_sym.return_type else self.INVALID
 
         for i, arg in enumerate(node.arguments):
-            expected_type = func_sym.params[i][0]
+            param = func_sym.params[i]
+            expected_type = param[0]
+            if len(param) > 2 and param[2] is not None:
+                p_dim = param[2]
+                nd = len(p_dim) if isinstance(p_dim, list) else 1
+                expected_type = expected_type + ("[]" * nd)
             got_type = self.analyze(arg)
             self.check_type_compatibility(arg, expected_type, got_type)
 
@@ -575,6 +590,9 @@ class SemanticAnalyzer:
             self.error(node, f"atributo '{attr_name}' nao encontrado na classe '{obj_type}'.")
             return self.INVALID
 
+        if attr_sym.dimension is not None:
+            num_dims = len(attr_sym.dimension) if isinstance(attr_sym.dimension, list) else 1
+            return attr_sym.type + ("[]" * num_dims)
         return attr_sym.type
 
     def visit_NewObjectNode(self, node):
@@ -599,7 +617,12 @@ class SemanticAnalyzer:
             return node.class_name
 
         for i, arg in enumerate(node.arguments):
-            expected_type = constructor.params[i][0]
+            param = constructor.params[i]
+            expected_type = param[0]
+            if len(param) > 2 and param[2] is not None:
+                p_dim = param[2]
+                nd = len(p_dim) if isinstance(p_dim, list) else 1
+                expected_type = expected_type + ("[]" * nd)
             got_type = self.analyze(arg)
             self.check_type_compatibility(arg, expected_type, got_type)
 
