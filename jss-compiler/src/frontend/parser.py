@@ -287,20 +287,17 @@ def p_argument_list_nonempty(p):
         p[0] = p[1] + [p[3]]
 
 def p_if_statement(p):
-    '''if_statement : IF LPAREN expression RPAREN statement %prec IFX
-                    | IF LPAREN expression RPAREN statement ELSE statement'''
+    '''if_statement : IF LPAREN expression RPAREN block %prec IFX
+                    | IF LPAREN expression RPAREN block ELSE block
+                    | IF LPAREN expression RPAREN block ELSE if_statement'''
     if len(p) == 6:
-        then_branch = BlockNode(p[5]) if isinstance(p[5], list) else p[5]
-        p[0] = IfNode(condition=p[3], then_branch=then_branch)
+        p[0] = IfNode(condition=p[3], then_branch=p[5])
     else:
-        then_branch = BlockNode(p[5]) if isinstance(p[5], list) else p[5]
-        else_branch = BlockNode(p[7]) if isinstance(p[7], list) else p[7]
-        p[0] = IfNode(condition=p[3], then_branch=then_branch, else_branch=else_branch)
+        p[0] = IfNode(condition=p[3], then_branch=p[5], else_branch=p[7])
 
 def p_while_statement(p):
-    'while_statement : WHILE LPAREN expression RPAREN statement'
-    body = BlockNode(p[5]) if isinstance(p[5], list) else p[5]
-    p[0] = WhileNode(condition=p[3], body=body)
+    'while_statement : WHILE LPAREN expression RPAREN block'
+    p[0] = WhileNode(condition=p[3], body=p[5])
 
 def p_expression_opt(p):
     '''expression_opt : empty
@@ -314,10 +311,9 @@ def p_for_init(p):
     p[0] = p[1]
 
 def p_for_statement(p):
-    'for_statement : FOR LPAREN for_init SEMICOLON expression_opt SEMICOLON expression_opt RPAREN statement'
+    'for_statement : FOR LPAREN for_init SEMICOLON expression_opt SEMICOLON expression_opt RPAREN block'
     init = BlockNode(p[3]) if isinstance(p[3], list) else p[3]
-    body = BlockNode(p[9]) if isinstance(p[9], list) else p[9]
-    p[0] = ForNode(init=init, condition=p[5], update=p[7], body=body)
+    p[0] = ForNode(init=init, condition=p[5], update=p[7], body=p[9])
 
 def p_break_statement(p):
     'break_statement : BREAK SEMICOLON'
