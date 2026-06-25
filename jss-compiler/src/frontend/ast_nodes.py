@@ -35,7 +35,12 @@ class VarDeclarationNode(ASTNode):
 
     def print_tree(self, indent=0):
         type_str = "CONST" if self.is_const else "LET"
-        dim_str = f"[{self.dimension}]" if self.dimension is not None else ""
+        if isinstance(self.dimension, list):
+            dim_str = "".join([f"[{d}]" for d in self.dimension])
+        elif self.dimension is not None:
+            dim_str = f"[{self.dimension}]"
+        else:
+            dim_str = ""
         result = self.get_indent(indent) + f"VarDeclarationNode ({type_str} {self.var_type}{dim_str} {self.name}):\n"
         if self.value:
             result += self.value.print_tree(indent + 1)
@@ -138,15 +143,27 @@ class BreakNode(ASTNode):
 
 class FunctionNode(ASTNode):
     """Declaracao de funcao (function <tipo> nome(params) { ... })."""
-    def __init__(self, return_type, name, params, body):
+    def __init__(self, return_type, name, params, body, return_dimension=None):
         self.return_type = return_type
         self.name = name
-        self.params = params  # Lista de tuplas (tipo, nome)
+        self.params = params  # Lista de tuplas (tipo, nome, dimensao)
         self.body = body
+        self.return_dimension = return_dimension
 
     def print_tree(self, indent=0):
-        params_str = ", ".join([f"{p[0]} {p[1]}" for p in self.params])
-        result = self.get_indent(indent) + f"FunctionNode ({self.return_type} {self.name}({params_str})):\n"
+        def fmt_param(p):
+            t, n = p[0], p[1]
+            d = p[2] if len(p) > 2 else None
+            if d is not None:
+                dims = d if isinstance(d, list) else [d]
+                return f"{t}{''.join(f'[{x}]' for x in dims)} {n}"
+            return f"{t} {n}"
+        params_str = ", ".join(fmt_param(p) for p in self.params)
+        ret = self.return_type
+        if self.return_dimension:
+            dims = self.return_dimension if isinstance(self.return_dimension, list) else [self.return_dimension]
+            ret += ''.join(f'[{x}]' for x in dims)
+        result = self.get_indent(indent) + f"FunctionNode ({ret} {self.name}({params_str})):\n"
         result += self.body.print_tree(indent + 1)
         return result
 
@@ -263,7 +280,14 @@ class ClassConstructorNode(ASTNode):
         self.body = body
 
     def print_tree(self, indent=0):
-        params_str = ", ".join([f"{p[0]} {p[1]}" for p in self.params])
+        def fmt_param(p):
+            t, n = p[0], p[1]
+            d = p[2] if len(p) > 2 else None
+            if d is not None:
+                dims = d if isinstance(d, list) else [d]
+                return f"{t}{''.join(f'[{x}]' for x in dims)} {n}"
+            return f"{t} {n}"
+        params_str = ", ".join(fmt_param(p) for p in self.params)
         result = self.get_indent(indent) + f"ClassConstructorNode ({self.class_name} constructor({params_str})):\n"
         result += self.body.print_tree(indent + 1)
         return result
@@ -373,3 +397,51 @@ class IdentifierNode(ASTNode):
 
     def print_tree(self, indent=0):
         return self.get_indent(indent) + f"IdentifierNode ({self.name})\n"
+
+
+# Sistema de rastreamento automático de posição (linha e coluna) dos nós da AST
+import sys
+
+def _get_parser_pos():
+    frame = sys._getframe(1)
+    while frame:
+        func_name = frame.f_code.co_name
+        if func_name.startswith('p_') and 'p' in frame.f_locals:
+            p = frame.f_locals['p']
+            if hasattr(p, 'lineno') and len(p) > 1:
+                # Busca sequencial pelo primeiro símbolo com linha válida
+                for i in range(1, len(p)):
+                    # 1. Tentar obter do slice do token terminal
+                    slice_item = p.slice[i]
+                    lineno = getattr(slice_item, 'lineno', 0)
+                    lexpos = getattr(slice_item, 'lexpos', 0)
+                    if lineno != 0:
+                        return lineno, lexpos
+                    # 2. Tentar obter do próprio objeto filho (se for um nó da AST)
+                    val = p[i]
+                    if hasattr(val, 'lineno') and getattr(val, 'lineno', 0) != 0:
+                        return val.lineno, getattr(val, 'lexpos', 0)
+                # Fallback original
+                try:
+                    return p.lineno(1), p.lexpos(1)
+                except Exception:
+                    pass
+        frame = frame.f_back
+    return None, None
+
+def track_node_pos(cls):
+    orig_init = getattr(cls, '__init__', None)
+    def new_init(self, *args, **kwargs):
+        if orig_init and orig_init is not object.__init__:
+            orig_init(self, *args, **kwargs)
+        lineno, lexpos = _get_parser_pos()
+        self.lineno = lineno
+        self.lexpos = lexpos
+    cls.__init__ = new_init
+    return cls
+
+# Aplicar o decorador a todos os nós da AST definidos neste módulo
+for name, val in list(globals().items()):
+    if isinstance(val, type) and issubclass(val, ASTNode) and val is not ASTNode:
+        globals()[name] = track_node_pos(val)
+

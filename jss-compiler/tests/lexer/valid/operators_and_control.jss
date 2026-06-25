@@ -20,5 +20,8 @@ function int calcula(int a, int b) {
         b %= 2;
     }
 
+    ok &&= true;
+    ok ||= false;
+
     return (diferenca + produto + a) % 2;
 }

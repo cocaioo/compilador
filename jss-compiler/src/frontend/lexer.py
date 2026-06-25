@@ -4,6 +4,7 @@ Responsavel por reconhecer tokens e reportar erros lexicos com linha.
 """
 
 import ply.lex as lex
+from frontend.errors import format_visual_error
 
 
 reserved = {
@@ -61,6 +62,8 @@ tokens = [
     "TIMES_ASSIGN",
     "DIVIDE_ASSIGN",
     "MOD_ASSIGN",
+    "AND_ASSIGN",
+    "OR_ASSIGN",
     "LPAREN",
     "RPAREN",
     "LBRACE",
@@ -70,8 +73,7 @@ tokens = [
     "SEMICOLON",
     "COMMA",
     "DOT",
-] + list(reserved.values())
-
+] + list(set(reserved.values()))
 
 t_ignore = " \t"
 
@@ -91,6 +93,8 @@ t_EQ = r"=="
 t_NE = r"!="
 t_GE = r">="
 t_LE = r"<="
+t_AND_ASSIGN = r"&&="
+t_OR_ASSIGN = r"\|\|="
 t_AND = r"&&"
 t_OR = r"\|\|"
 t_INCREMENT = r"\+\+"
@@ -125,12 +129,27 @@ def t_COMMENT(t):
     pass
 
 
+def _collect_or_raise(t, formatted):
+    """Acumula o erro se o lexer estiver em modo de coleta; caso contrário, lança LexicalError."""
+    if getattr(t.lexer, 'collect_errors', False):
+        if not hasattr(t.lexer, 'errors'):
+            t.lexer.errors = []
+        t.lexer.errors.append(formatted)
+        return True
+    raise LexicalError(formatted)
+
+
 def t_MULTILINE_COMMENT(t):
     r"/\*"
-    raise LexicalError(
-        f"Erro lexico na linha {t.lineno}: comentarios multilinha '/* ... */' "
-        "nao sao permitidos; use comentarios de linha '//'"
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        "comentarios multilinha '/* ... */' nao sao permitidos; use comentarios de linha '//'",
+        t.lineno,
+        t.lexpos
     )
+    if _collect_or_raise(t, formatted):
+        return None
 
 
 def t_CONSOLE_LOG(t):
@@ -146,10 +165,15 @@ def t_REAL_LITERAL(t):
 
 def t_INVALID_ID(t):
     r"\d+[A-Za-z_][A-Za-z0-9_]*"
-    raise LexicalError(
-        f"Erro lexico na linha {t.lineno}: identificador invalido '{t.value}'. "
-        "Identificadores nao podem comecar com digito"
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        f"identificador invalido '{t.value}'. Identificadores nao podem comecar com digito",
+        t.lineno,
+        t.lexpos
     )
+    if _collect_or_raise(t, formatted):
+        return None
 
 
 def t_INT_LITERAL(t):
@@ -161,15 +185,31 @@ def t_INT_LITERAL(t):
 def t_INVALID_STRING_ESCAPE(t):
     r'"([^\\\r\n"]|\\[n"\\])*\\[^n"\\\r\n]([^\\\r\n"]|\\.)*"'
     invalid_escape = _find_invalid_escape(t.value)
-    raise LexicalError(
-        f"Erro lexico na linha {t.lineno}: escape invalido '\\{invalid_escape}' "
-        "em string"
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        f"escape invalido '\\{invalid_escape}' em string",
+        t.lineno,
+        t.lexpos
     )
+    if _collect_or_raise(t, formatted):
+        return None
 
 
 def t_UNTERMINATED_STRING(t):
     r'"([^\\\r\n"]|\\.)*(\r\n|\r|\n|$)'
-    raise LexicalError(f"Erro lexico na linha {t.lineno}: string nao finalizada")
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        "string nao finalizada",
+        t.lineno,
+        t.lexpos
+    )
+    if _collect_or_raise(t, formatted):
+        # Contabilizar a quebra de linha consumida pelo regex
+        newlines = t.value.count('\n') + t.value.count('\r') - t.value.count('\r\n')
+        t.lexer.lineno += newlines
+        return None
 
 
 def t_STRING_LITERAL(t):
@@ -191,9 +231,20 @@ def t_newline(t):
 
 
 def t_error(t):
-    raise LexicalError(
-        f"Erro lexico na linha {t.lineno}: caractere invalido '{t.value[0]}'"
+    formatted = format_visual_error(
+        t.lexer.lexdata,
+        "Erro Léxico",
+        f"caractere invalido '{t.value[0]}'",
+        t.lineno,
+        t.lexpos
     )
+    if getattr(t.lexer, 'collect_errors', False):
+        if not hasattr(t.lexer, 'errors'):
+            t.lexer.errors = []
+        t.lexer.errors.append(formatted)
+        t.lexer.skip(1)
+        return
+    raise LexicalError(formatted)
 
 
 def _decode_string_literal(raw_value):
@@ -213,6 +264,7 @@ def _decode_string_literal(raw_value):
             index += 1
 
     return "".join(decoded)
+
 
 
 def _find_invalid_escape(raw_value):

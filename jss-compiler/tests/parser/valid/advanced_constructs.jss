@@ -1,6 +1,6 @@
 function void main() {
     let int a = 1;
-    let int b = 2;
+    let real b = 2;
     let bool cond = true;
     let int[3] valores = [1, 2, 3];
 
