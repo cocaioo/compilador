@@ -65,7 +65,7 @@ def test_multiple_errors_cascade_suppression():
         errors_count = message.lower().count("erro sem")
         if errors_count != 3:
             raise AssertionError(f"Esperava exatamente 3 erros semanticos (com supressao de cascata), mas obteve {errors_count}:\n{message}")
-        
+
         if "identificador 'b' nao declarado" not in message:
             raise AssertionError(f"Falta erro de 'b' nao declarado:\n{message}")
         if "identificador 'c' nao declarado" not in message:

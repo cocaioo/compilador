@@ -63,12 +63,12 @@ def test_multiple_syntax_errors():
         errors_count = message.lower().count("erro sin")
         if errors_count != 3:
             raise AssertionError(f"Esperava exatamente 3 erros sintaticos, mas obteve {errors_count}:\n{message}")
-        
-        if "token inesperado \'y\'" not in message.lower():
-            raise AssertionError(f"Falta erro de \'y\' inesperado:\n{message}")
-        if "token inesperado \'z\'" not in message.lower():
-            raise AssertionError(f"Falta erro de \'z\' inesperado:\n{message}")
-        if "utilize a palavra-chave \'let\' ou \'const\'" not in message.lower():
+
+        if "token inesperado 'y'" not in message.lower():
+            raise AssertionError(f"Falta erro de 'y' inesperado:\n{message}")
+        if "token inesperado 'z'" not in message.lower():
+            raise AssertionError(f"Falta erro de 'z' inesperado:\n{message}")
+        if "utilize a palavra-chave 'let' ou 'const'" not in message.lower():
             raise AssertionError(f"Falta erro de declaracao C-style:\n{message}")
         return
     raise AssertionError("Deveria ter gerado erro sintatico")
@@ -94,7 +94,7 @@ def test_brace_error_recovery_multi():
         errors_count = message.lower().count("erro sin")
         if errors_count != 2:
             raise AssertionError(f"Esperava exatamente 2 erros sintaticos com recuperacao de chaves, mas obteve {errors_count}:\n{message}")
-        
+
         if "token inesperado '}'" not in message.lower():
             raise AssertionError(f"Falta erro do bloco 1:\n{message}")
         if "token inesperado 'y'" not in message.lower():
@@ -108,14 +108,14 @@ def test_mandatory_braces_errors():
     function void main() {
         let int x = 10;
         let int y = 20;
-        
+
         while (x < 10);
-        
+
         if (x > 0) {
             x = 1;
         } else if (y > 0)
             y = 2;
-            
+
         for (let int i = 0; i < 5; ++i)
             console.log(i);
     }
@@ -127,7 +127,7 @@ def test_mandatory_braces_errors():
         errors_count = message.lower().count("erro sin")
         if errors_count != 3:
             raise AssertionError(f"Esperava exatamente 3 erros sintaticos de chaves obrigatorias, mas obteve {errors_count}:\n{message}")
-        
+
         if "token inesperado ';'" not in message.lower():
             raise AssertionError(f"Falta erro de ';' inesperado no while:\n{message}")
         if "token inesperado 'y'" not in message.lower():

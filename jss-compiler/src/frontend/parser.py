@@ -555,8 +555,8 @@ def p_error(p):
 
     elif 'CLASS' in sym_types and 'class_constructor' not in sym_types:
         is_method_signature = (
-            token_type == 'LPAREN' and 
-            len(sym_types) >= 2 and 
+            token_type == 'LPAREN' and
+            len(sym_types) >= 2 and
             (sym_types[-2:] == ['type', 'ID'] or sym_types[-2:] == ['ID', 'ID'])
         )
         is_void_method = (
@@ -592,8 +592,8 @@ def p_error(p):
             )
 
     elif token_type in (
-        'LET', 'CONST', 'FUNCTION', 'IF', 'ELSE', 'WHILE', 'FOR', 'BREAK', 'RETURN', 
-        'CLASS', 'CONSTRUCTOR', 'NEW', 'THIS', 'NULL', 'TRUE', 'FALSE', 'INT_TYPE', 
+        'LET', 'CONST', 'FUNCTION', 'IF', 'ELSE', 'WHILE', 'FOR', 'BREAK', 'RETURN',
+        'CLASS', 'CONSTRUCTOR', 'NEW', 'THIS', 'NULL', 'TRUE', 'FALSE', 'INT_TYPE',
         'REAL_TYPE', 'STR_TYPE', 'BOOL_TYPE', 'VOID_TYPE', 'INPUT', 'CONSOLE_LOG'
     ) and raw_expected:
         clean_expected = [t for t in raw_expected if t != '$end' and not t.startswith('error')]
@@ -607,7 +607,7 @@ def p_error(p):
         expected_str = ""
         if raw_expected:
             clean_expected = [t for t in raw_expected if t != '$end' and not t.startswith('error')]
-            
+
             if token_type == "EOF":
                 if 'SEMICOLON' in clean_expected and len(clean_expected) > 10:
                     expected_str = " Talvez esteja faltando um ';'."
@@ -617,7 +617,7 @@ def p_error(p):
                     expected_str = " Talvez esteja faltando fechar um parentese ')'."
                 elif 'RBRACKET' in clean_expected:
                     expected_str = " Talvez esteja faltando fechar um colchete ']'."
-            
+
             if not expected_str and clean_expected:
                 translated = []
                 for t in clean_expected:
@@ -668,7 +668,7 @@ def p_error(p):
                         suggestions.append("']'")
                     if 'ID' in clean_expected:
                         suggestions.append("um identificador")
-                    
+
                     if suggestions:
                         if len(suggestions) == 1:
                             base_str = suggestions[0]
@@ -701,10 +701,10 @@ def p_error(p):
         lexpos = len(source_code)
 
     formatted = format_visual_error(source_code, error_class, err_msg, line_num, lexpos)
-    
+
     if not hasattr(parser, 'errors'):
         parser.errors = []
-    
+
     if not parser.errors or parser.errors[-1] != formatted:
         parser.errors.append(formatted)
 
