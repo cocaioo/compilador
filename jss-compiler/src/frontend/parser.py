@@ -53,7 +53,7 @@ class _ParserWrapper:
         return ast
 
 precedence = (
-    ('right', 'ASSIGN', 'PLUS_ASSIGN', 'MINUS_ASSIGN', 'TIMES_ASSIGN', 'DIVIDE_ASSIGN', 'MOD_ASSIGN'),
+    ('right', 'ASSIGN', 'PLUS_ASSIGN', 'MINUS_ASSIGN', 'TIMES_ASSIGN', 'DIVIDE_ASSIGN', 'MOD_ASSIGN', 'AND_ASSIGN', 'OR_ASSIGN'),
     ('left', 'OR'),
     ('left', 'AND'),
     ('left', 'EQ', 'NE'),
@@ -114,7 +114,7 @@ def p_type(p):
             | STR_TYPE
             | BOOL_TYPE
             | ID'''
-    p[0] = 'real' if p[1] in ('real', 'float') else p[1]
+    p[0] = p[1]
 
 def p_return_type(p):
     '''return_type : type
@@ -171,7 +171,9 @@ def p_expression_assignment(p):
                   | expression MINUS_ASSIGN expression
                   | expression TIMES_ASSIGN expression
                   | expression DIVIDE_ASSIGN expression
-                  | expression MOD_ASSIGN expression'''
+                  | expression MOD_ASSIGN expression
+                  | expression AND_ASSIGN expression
+                  | expression OR_ASSIGN expression'''
     if not isinstance(p[1], (IdentifierNode, ArrayAccessNode, AttributeAccessNode)):
         msg = "atribuicao para alvo invalido."
         line = p.lineno(2)
@@ -271,7 +273,7 @@ def p_expression_cast(p):
                   | REAL_TYPE LPAREN expression RPAREN
                   | BOOL_TYPE LPAREN expression RPAREN
                   | STR_TYPE LPAREN expression RPAREN'''
-    target = 'real' if p[1] in ('real', 'float') else p[1]
+    target = p[1]
     p[0] = CastNode(target_type=target, expression=p[3])
 
 def p_argument_list(p):

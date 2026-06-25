@@ -26,7 +26,6 @@ reserved = {
     "false": "FALSE",
     "int": "INT_TYPE",
     "real": "REAL_TYPE",
-    "float": "REAL_TYPE",
     "str": "STR_TYPE",
     "bool": "BOOL_TYPE",
     "void": "VOID_TYPE",
@@ -63,6 +62,8 @@ tokens = [
     "TIMES_ASSIGN",
     "DIVIDE_ASSIGN",
     "MOD_ASSIGN",
+    "AND_ASSIGN",
+    "OR_ASSIGN",
     "LPAREN",
     "RPAREN",
     "LBRACE",
@@ -92,6 +93,8 @@ t_EQ = r"=="
 t_NE = r"!="
 t_GE = r">="
 t_LE = r"<="
+t_AND_ASSIGN = r"&&="
+t_OR_ASSIGN = r"\|\|="
 t_AND = r"&&"
 t_OR = r"\|\|"
 t_INCREMENT = r"\+\+"
@@ -142,19 +145,6 @@ def t_MULTILINE_COMMENT(t):
         t.lexer.lexdata,
         "Erro Léxico",
         "comentarios multilinha '/* ... */' nao sao permitidos; use comentarios de linha '//'",
-        t.lineno,
-        t.lexpos
-    )
-    if _collect_or_raise(t, formatted):
-        return None
-
-
-def t_INVALID_LOGICAL_ASSIGN(t):
-    r"&&=|\|\|="
-    formatted = format_visual_error(
-        t.lexer.lexdata,
-        "Erro Léxico",
-        f"operador '{t.value}' nao e suportado. Atribuicoes logicas compostas nao sao permitidas em JSS; use a forma explicita (ex: 'variavel = variavel {t.value[:-1]} expressao').",
         t.lineno,
         t.lexpos
     )

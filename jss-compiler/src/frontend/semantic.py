@@ -170,8 +170,12 @@ class SemanticAnalyzer:
             return self.INVALID
 
         if node.op != '=':
-            if target_type not in ('int', 'real') or value_type not in ('int', 'real'):
-                self.error(node, f"operador composto '{node.op}' requer operandos numericos.")
+            if node.op in ('&&=', '||='):
+                if target_type != 'bool' or value_type != 'bool':
+                    self.error(node, f"operador composto '{node.op}' requer operandos booleanos.")
+            else:
+                if target_type not in ('int', 'real') or value_type not in ('int', 'real'):
+                    self.error(node, f"operador composto '{node.op}' requer operandos numericos.")
 
         self.check_type_compatibility(node.value, target_type, value_type, is_assignment=True)
         return target_type
