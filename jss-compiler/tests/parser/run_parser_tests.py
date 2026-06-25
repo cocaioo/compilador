@@ -103,6 +103,41 @@ def test_brace_error_recovery_multi():
     raise AssertionError("Deveria ter gerado erro sintatico")
 
 
+def test_mandatory_braces_errors():
+    source = """
+    function void main() {
+        let int x = 10;
+        let int y = 20;
+        
+        while (x < 10);
+        
+        if (x > 0) {
+            x = 1;
+        } else if (y > 0)
+            y = 2;
+            
+        for (let int i = 0; i < 5; ++i)
+            console.log(i);
+    }
+    """
+    try:
+        parse_code(source)
+    except SyntacticError as exc:
+        message = str(exc)
+        errors_count = message.lower().count("erro sin")
+        if errors_count != 3:
+            raise AssertionError(f"Esperava exatamente 3 erros sintaticos de chaves obrigatorias, mas obteve {errors_count}:\n{message}")
+        
+        if "token inesperado ';'" not in message.lower():
+            raise AssertionError(f"Falta erro de ';' inesperado no while:\n{message}")
+        if "token inesperado 'y'" not in message.lower():
+            raise AssertionError(f"Falta erro de 'y' inesperado no else-if:\n{message}")
+        if "token inesperado 'console.log'" not in message.lower():
+            raise AssertionError(f"Falta erro de 'console.log' inesperado no for:\n{message}")
+        return
+    raise AssertionError("Deveria ter gerado erro sintatico")
+
+
 def main():
     valid_files = sorted(VALID_DIR.glob("*.jss"))
     invalid_files = sorted(INVALID_DIR.glob("*.jss"))
@@ -123,6 +158,9 @@ def main():
 
     # Executar teste especifico de multiplos erros com recuperacao de chaves
     test_brace_error_recovery_multi()
+
+    # Executar teste especifico de chaves obrigatorias
+    test_mandatory_braces_errors()
 
     print("OK: testes do parser passaram.")
 
