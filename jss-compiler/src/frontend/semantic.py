@@ -568,6 +568,16 @@ class SemanticAnalyzer:
             self.error(node.index_expr, f"tentativa de indexar um valor do tipo '{array_type}' que nao e um vetor.")
             return self.INVALID
 
+        # Validação estática de limites do vetor (out of bounds)
+        if isinstance(node.index_expr, NumberNode) and not node.index_expr.is_real:
+            index_value = node.index_expr.value
+            array_dim = self.get_expression_dimension(node.array_expr)
+            if array_dim is not None:
+                size = array_dim[0] if isinstance(array_dim, list) else array_dim
+                if isinstance(size, int):
+                    if index_value < 0 or index_value >= size:
+                        self.error(node.index_expr, f"indice {index_value} fora dos limites para vetor de tamanho {size}.")
+
         return array_type[:-2]
 
     def visit_ArrayLiteralNode(self, node):
