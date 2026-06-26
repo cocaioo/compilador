@@ -40,7 +40,7 @@ console.log("Diferente:", n1 != n2);   // true
 console.log("MaiorIgual:", n1 >= n2);  // true
 console.log("MenorIgual:", n1 <= n2);  // false
 
-// === ATRIBUICAO COMPOSTA ===
+// === OPERADORES ARITMETICOS CONJUGADOS COM ATRIBUICAO ===
 let int val = 10;
 
 val += 5;   // 15
@@ -57,11 +57,3 @@ console.log("/=", val);
 
 val %= 4;   // 2
 console.log("%=", val);
-
-// Atribuicao composta com bool
-let bool flag = true;
-flag &&= false;  // false
-console.log("&&=", flag);
-
-flag ||= true;   // true
-console.log("||=", flag);

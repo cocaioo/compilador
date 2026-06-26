@@ -35,15 +35,6 @@ function int somarArray(int[5] arr) {
     return total;
 }
 
-// Funcao que retorna array
-function int[5] criarSequencia(int inicio) {
-    let int[5] seq;
-    for (let int i = 0; i < 5; i = i + 1) {
-        seq[i] = inicio + i;
-    }
-    return seq;
-}
-
 // Funcao recursiva (fatorial)
 function int fatorial(int n) {
     if (n <= 1) {
@@ -83,11 +74,6 @@ function void main() {
     numeros[4] = 50;
     let int total = somarArray(numeros);
     console.log("Total:", total);
-
-    // Funcao que retorna array
-    let int[5] sequencia = criarSequencia(100);
-    console.log("Sequencia[0]:", sequencia[0]);
-    console.log("Sequencia[4]:", sequencia[4]);
 
     // Recursao
     let int fat5 = fatorial(5);
