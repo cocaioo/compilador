@@ -254,6 +254,10 @@ class SemanticAnalyzer:
             if len(node.params) > 0:
                 self.error(node, "a funcao 'main' nao deve possuir parametros.")
 
+        ret_dim = getattr(node, 'return_dimension', None)
+        if ret_dim is not None:
+            self.error(node, f"funcao '{node.name}' nao pode retornar vetor. O tipo de retorno de funcoes ou metodos nao pode ser vetor.")
+
         # Registrar símbolo da função/método
         ret_dim = getattr(node, 'return_dimension', None)
         effective_return = node.return_type
@@ -448,6 +452,12 @@ class SemanticAnalyzer:
             got_type = self.analyze(arg)
             self.check_type_compatibility(arg, expected_type, got_type)
 
+            if len(param) > 2 and param[2] is not None and got_type != self.INVALID:
+                expected_dim = param[2]
+                got_dim = self.get_expression_dimension(arg)
+                if got_dim != expected_dim:
+                    self.error(arg, f"tamanho do vetor incompativel: esperado '{expected_dim}', mas obteve '{got_dim}'.")
+
         return func_sym.return_type
 
     def visit_BinaryOpNode(self, node):
@@ -558,6 +568,16 @@ class SemanticAnalyzer:
             self.error(node.index_expr, f"tentativa de indexar um valor do tipo '{array_type}' que nao e um vetor.")
             return self.INVALID
 
+        # Validação estática de limites do vetor (out of bounds)
+        if isinstance(node.index_expr, NumberNode) and not node.index_expr.is_real:
+            index_value = node.index_expr.value
+            array_dim = self.get_expression_dimension(node.array_expr)
+            if array_dim is not None:
+                size = array_dim[0] if isinstance(array_dim, list) else array_dim
+                if isinstance(size, int):
+                    if index_value < 0 or index_value >= size:
+                        self.error(node.index_expr, f"indice {index_value} fora dos limites para vetor de tamanho {size}.")
+
         return array_type[:-2]
 
     def visit_ArrayLiteralNode(self, node):
@@ -630,6 +650,12 @@ class SemanticAnalyzer:
             got_type = self.analyze(arg)
             self.check_type_compatibility(arg, expected_type, got_type)
 
+            if len(param) > 2 and param[2] is not None and got_type != self.INVALID:
+                expected_dim = param[2]
+                got_dim = self.get_expression_dimension(arg)
+                if got_dim != expected_dim:
+                    self.error(arg, f"tamanho do vetor incompativel: esperado '{expected_dim}', mas obteve '{got_dim}'.")
+
         return node.class_name
 
     def visit_ConsoleLogNode(self, node):
@@ -687,3 +713,39 @@ class SemanticAnalyzer:
 
     def visit_NullNode(self, node):
         return 'null'
+
+    def get_expression_dimension(self, node):
+        if isinstance(node, IdentifierNode):
+            sym = self.current_scope.lookup(node.name)
+            if sym:
+                return sym.dimension
+        elif isinstance(node, ArrayLiteralNode):
+            outer_size = len(node.expressions)
+            if outer_size > 0:
+                inner_dim = self.get_expression_dimension(node.expressions[0])
+                if inner_dim is not None:
+                    if isinstance(inner_dim, list):
+                        return [outer_size] + inner_dim
+                    else:
+                        return [outer_size, inner_dim]
+            return outer_size
+        elif isinstance(node, AttributeAccessNode):
+            obj_type = self.analyze(node.object_expr)
+            if obj_type != self.INVALID:
+                class_sym = self.global_scope.lookup(obj_type)
+                if class_sym and class_sym.is_class:
+                    attr_sym = class_sym.attributes.get(node.attribute_name)
+                    if attr_sym:
+                        return attr_sym.dimension
+        elif isinstance(node, ArrayAccessNode):
+            parent_dim = self.get_expression_dimension(node.array_expr)
+            if parent_dim is not None:
+                if isinstance(parent_dim, list):
+                    if len(parent_dim) > 1:
+                        remaining = parent_dim[1:]
+                        return remaining[0] if len(remaining) == 1 else remaining
+                    else:
+                        return None
+                else:
+                    return None
+        return None

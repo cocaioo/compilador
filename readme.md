@@ -5,7 +5,7 @@ Este repositório contém a implementação completa da etapa de **Front-End** d
 O compilador integra:
 1. **Análise Léxica (`lexer.py`):** Reconhecimento de tokens e detecção de caracteres/padrões inválidos.
 2. **Análise Sintática (`parser.py`):** Validação gramatical e construção da Árvore de Sintaxe Abstrata (AST) com recuperação de erros sintáticos (sincronização de chaves).
-3. **Análise Semântica (`semantic.py`):** Validação de escopos, tipos, constantes e propagação segura de tipos inválidos para evitar o efeito cascata.
+3. **Análise Semântica (`semantic.py`):** Validação de escopos, tipos, constantes, passagem de vetores por parâmetro (validação estática de tamanho), limites de índices de vetores (validação de out of bounds para índices constantes) e propagação segura de tipos inválidos para evitar o efeito cascata.
 
 ---
 
@@ -70,5 +70,11 @@ python jss-compiler/tests/run_all_tests.py
   python jss-compiler/tests/run_semantic_tests.py
   ```
 
----
+## 4. Validação e Segurança de Vetores
 
+O analisador semântico inclui recursos para garantir a segurança no uso de vetores:
+
+- **Passagem de Vetores por Parâmetro**: Valida estaticamente se a dimensão do vetor passado como argumento em chamadas de função ou construtores de classe condiz exatamente com a assinatura (ex: `int[5] vetor`).
+- **Verificação Estática de Limites (Out of Bounds)**: Caso o acesso ao vetor seja feito com um índice inteiro constante (ex: `vetor[3]` para um vetor de tamanho `3`, ou índices negativos como `vetor[-1]`), o compilador gerará um erro semântico em tempo de compilação.
+
+---
