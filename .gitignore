@@ -1,1 +1,8 @@
-venv
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.ll
+*.exe
+output.*
+llvm-mingw/

@@ -6,10 +6,12 @@ analise lexica e sintatica utilizando a implementacao do Lexer integrado.
 
 import sys
 import os
+import subprocess
 from frontend.parser import parser
 from frontend.lexer import build_lexer, LexicalError
 from frontend.errors import SyntacticError, SemanticError
 from frontend.semantic import SemanticAnalyzer
+from backend.code_generator import CodeGenerator
 
 def main():
     content = None
@@ -143,7 +145,75 @@ def main():
 
         sys.exit(1)
     else:
-        print("Analise concluida com sucesso.")
+        print("Analise semantica concluida com sucesso.")
+        
+        # Determinar nomes dos arquivos de saída
+        input_filepath = "output.jss"
+        if len(sys.argv) >= 2 and sys.argv[1] != "-":
+            input_filepath = sys.argv[1]
+            
+        base_path, _ = os.path.splitext(input_filepath)
+        llvm_filepath = base_path + ".ll"
+        exe_filepath = base_path + ".exe" if os.name == 'nt' else base_path
+        
+        print("Gerando codigo LLVM IR...")
+        try:
+            generator = CodeGenerator()
+            llvm_ir = generator.generate(ast)
+            
+            with open(llvm_filepath, 'w', encoding='utf-8') as f:
+                f.write(llvm_ir)
+            print(f"Codigo LLVM IR gerado com sucesso em '{llvm_filepath}'.")
+        except Exception as e:
+            print(f"Erro ao gerar codigo intermediario LLVM IR: {e}")
+            sys.exit(1)
+            
+        # Compilação nativa com Clang
+        print("Compilando executavel nativo...")
+        runtime_c = os.path.join(os.path.dirname(__file__), "backend", "runtime.c")
+        
+        if not os.path.exists(runtime_c):
+            print(f"Erro: Biblioteca de runtime '{runtime_c}' nao encontrada.")
+            sys.exit(1)
+            
+        # Buscar clang portátil
+        clang_bin = "clang"
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        for _ in range(5):
+            portable_clang = os.path.join(current_dir, "llvm-mingw", "bin", "clang.exe" if os.name == 'nt' else "clang")
+            if os.path.exists(portable_clang):
+                clang_bin = portable_clang
+                break
+            parent = os.path.dirname(current_dir)
+            if parent == current_dir:
+                break
+            current_dir = parent
+
+        try:
+            # Invoca o Clang para compilar o .ll e o runtime.c juntos
+            cmd = [clang_bin, "-o", exe_filepath, llvm_filepath, runtime_c]
+            res = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+            
+            if res.returncode == 0:
+                print(f"Compilacao concluida com sucesso! Executavel gerado em '{exe_filepath}'.")
+            else:
+                print("Erro na compilacao com Clang:")
+                print(res.stderr)
+                sys.exit(1)
+        except FileNotFoundError:
+            print("\n" + "!" * 50)
+            print("AVISO: O executavel nao pode ser gerado porque o 'clang' nao esta instalado ou nao foi encontrado no PATH.")
+            print("Para rodar o programa completo, por favor:")
+            print("1. Instale o LLVM/Clang:")
+            print("   - No Windows: rodando o comando 'winget install LLVM.LLVM'")
+            print("   - No Linux (Ubuntu/Debian): rodando 'sudo apt install clang'")
+            print("   - No macOS: rodando 'brew install llvm'")
+            print("2. Após a instalacao, execute novamente o compilador.")
+            print("!" * 50)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Erro inesperado durante a compilacao: {e}")
+            sys.exit(1)
 
 if __name__ == '__main__':
     main()

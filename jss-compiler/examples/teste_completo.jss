@@ -20,8 +20,8 @@ function str maiorque(real x, real y){
    let real[1][2] xy;
    xy[0][0] = x;
    xy[0][1] = y;
-   let str verdadeiro = "verdadeiro, " + x + " é maior que " + y ;
-   let str falso = "falso, " + x + " é menor que " + y ;
+   let str verdadeiro = "verdadeiro, " + x + " eh maior que " + y ;
+   let str falso = "falso, " + x + " eh menor que " + y ;
 
    if(int(xy[0][0]) > int(xy[0][1])){
       return verdadeiro;
@@ -29,17 +29,17 @@ function str maiorque(real x, real y){
       return falso;
 }
 
-function void printar(str string){console.log(string + 084);}
+function void printar(str string){console.log(string + "mas olha aqui esse numero foda: " + 0869);}
 
 function void main(){
    let real x,y;
-   x = 1.1;
-   y = 0.3;
-   const int z = 3;
+   x = 10;
+   y = 3;
+   const int z = 2;
 
    for(let int i = 1; i < z; ++i){
-      x = x*i - x*(i - 1);
-      y = y*i - y*(i - 1);
+      x += x*i;
+      y += y*i;
    }
 
    let CalculosRetangulo calculo = new CalculosRetangulo(x, y);

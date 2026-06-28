@@ -15,12 +15,15 @@ def run_script(script_path):
         encoding="utf-8",
         errors="replace"
     )
+    enc = sys.stdout.encoding or 'utf-8'
+    stdout_safe = res.stdout.encode(enc, errors='replace').decode(enc)
+    stderr_safe = res.stderr.encode(enc, errors='replace').decode(enc)
     if res.returncode != 0:
         print(f"FAILED: {script_path.name}")
-        print("Stdout:", res.stdout)
-        print("Stderr:", res.stderr)
+        print("Stdout:", stdout_safe)
+        print("Stderr:", stderr_safe)
         return False
-    print(f"SUCCESS: {script_path.name}\n{res.stdout.strip()}")
+    print(f"SUCCESS: {script_path.name}\n{stdout_safe.strip()}")
     return True
 
 def run_compiler(input_str, expected_exit_code=0):
@@ -125,6 +128,8 @@ def main():
     success &= run_script(TESTS_DIR / "parser" / "run_parser_tests.py")
     print("-" * 40)
     success &= run_script(TESTS_DIR / "run_semantic_tests.py")
+    print("-" * 40)
+    success &= run_script(TESTS_DIR / "run_backend_tests.py")
     print("-" * 40)
     
     # Run integration tests
