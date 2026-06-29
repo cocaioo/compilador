@@ -94,3 +94,111 @@ O Back-End suporta a compilação de todas as construções da linguagem JSS:
 - **Tipagem Dinâmica e Coerção:** Conversão segura de inteiros para reais e formatação/concatenação implícita de strings chamando o runtime C.
 - **Vetores Unidimensionais e Bidimensionais:** Alocação de memória linearizada na stack (`alloca`) e indexação recursiva via `getelementptr`.
 - **Programação Orientada a Objetos (Classes):** Classes mapeadas para estruturas (`%struct`), instanciação com alocação dinâmica (`malloc`), chamadas de métodos e construtores passando a referência implícita `this`, e comparação de ponteiros de objetos com `null`.
+
+---
+
+## 5. Exemplos de Códigos com Sucesso e Erro
+
+### A. Exemplo de Sucesso (Compilação e Execução Bem-Sucedida)
+
+Este exemplo demonstra declaração de classe, construtor, método, concatenação implícita com strings, conversão de tipo explícita, laço `for` com operador de incremento pré-fixado, e alocação dinâmica de objetos.
+
+**Código JSS (`sucesso.jss`):**
+```javascript
+class Retangulo {
+    real largura;
+    real altura;
+
+    Retangulo constructor(real largura, real altura) {
+        this.largura = largura;
+        this.altura = altura;
+    }
+
+    real area() {
+        return this.largura * this.altura;
+    }
+}
+
+function void main() {
+    let real l = 5.0;
+    let real a = 4.0;
+    let Retangulo r = new Retangulo(l, a);
+    
+    let real area_ret = r.area();
+    console.log("Largura:", r.largura, "Altura:", r.altura);
+    console.log("Area do Retangulo:", area_ret);
+}
+```
+
+**Comando de Execução:**
+```bash
+python jss-compiler/src/main.py sucesso.jss
+```
+
+**Saída Esperada no Terminal:**
+```text
+Analise semantica concluida com sucesso.
+Gerando codigo LLVM IR...
+Codigo LLVM IR gerado com sucesso em 'sucesso.ll'.
+Compilando executavel nativo...
+Compilacao concluida com sucesso! Executavel gerado em 'sucesso.exe'.
+```
+
+**Executando o Binário Gerado:**
+```bash
+./sucesso.exe
+```
+**Saída:**
+```text
+Largura: 5 Altura: 4
+Area do Retangulo: 20
+```
+
+---
+
+### B. Exemplo com Múltiplos Erros (Falha na Compilação)
+
+Este exemplo introduz erros de fases distintas (léxica, sintática e semântica) demonstrando a capacidade do compilador de reportar múltiplos problemas organizados por categoria em um relatório unificado e com indicação visual da linha e coluna de cada ocorrência.
+
+**Código JSS (`erros.jss`):**
+```javascript
+let int x = 10 y; // Erro Sintático: token inesperado 'y'
+
+function void main() {
+    let int a = nao_declarada; // Erro Semântico: variável não declarada
+    let str s = 123;           // Erro Semântico: tipo incompatível (esperava 'str', obteve 'int')
+    
+    /* Comentário multilinha que é inválido em JSS */
+}
+```
+
+**Comando de Execução:**
+```bash
+python jss-compiler/src/main.py erros.jss
+```
+
+**Saída Esperada no Terminal:**
+```text
+==================================================
+        RELATÓRIO DE ERROS DE COMPILAÇÃO
+==================================================
+
+[ERROS LÉXICOS / SINTÁTICOS] ---------------------
+Erro Sintatico na linha 1, coluna 14: token inesperado 'y'. ';' ausente antes de 'y'.
+ 1 | let int x = 10 y; // Erro Sintático: token inesperado 'y'
+                    ^
+
+Erro Léxico na linha 7, coluna 5: comentarios multilinha '/* ... */' nao sao permitidos; use comentarios de linha '//'
+ 7 |     /* Comentário multilinha que é inválido em JSS */
+         ^
+
+[ERROS SEMÂNTICOS] -------------------------------
+Erro Semântico na linha 4, coluna 17: identificador 'nao_declarada' nao declarado.
+ 4 |     let int a = nao_declarada; // Erro Semântico: variável não declarada
+                     ^
+
+Erro Semântico na linha 5, coluna 17: tipos incompativeis: esperava 'str', mas obteve 'int'.
+ 5 |     let str s = 123;           // Erro Semântico: tipo incompatível (esperava 'str', obteve 'int')
+                     ^
+```
+
