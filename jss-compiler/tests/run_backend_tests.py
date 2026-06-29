@@ -178,11 +178,159 @@ p2 is not null now, soma: 70"""
 v[1] modificado: 99
 m[0][0]: 1 m[1][2]: 6"""
 
+    # Teste 5: Curto-circuito prático
+    code_short_circuit = """
+    let int avaliou = 0;
+    function bool verificar() {
+        avaliou = avaliou + 1;
+        return true;
+    }
+    function void main() {
+        let bool r1 = false && verificar();
+        console.log("Devem ser 0:", avaliou);
+        let bool r2 = true || verificar();
+        console.log("Devem ser 0:", avaliou);
+    }
+    """
+    expected_short_circuit = """Devem ser 0: 0
+Devem ser 0: 0"""
+
+    # Teste 6: Lista Encadeada (Classes autorreferenciadas)
+    code_linked_list = """
+    class Node {
+        int valor;
+        Node prox;
+        Node constructor(int v) {
+            this.valor = v;
+            this.prox = null;
+        }
+    }
+    function void main() {
+        let Node n1 = new Node(10);
+        let Node n2 = new Node(20);
+        n1.prox = n2;
+        if (n1.prox != null) {
+            console.log("n1:", n1.valor, "n1.prox:", n1.prox.valor);
+        }
+    }
+    """
+    expected_linked_list = "n1: 10 n1.prox: 20"
+
+    # Teste 7: Vetores Multidimensionais por Referência
+    code_matrix_ref = """
+    function void modificarMatriz(int[2][2] mat) {
+        mat[0][1] = 999;
+    }
+    function void main() {
+        let int[2][2] m;
+        m[0][1] = 10;
+        modificarMatriz(m);
+        console.log("Modificado:", m[0][1]);
+    }
+    """
+    expected_matrix_ref = "Modificado: 999"
+
+    # Teste 8: Métodos de Classe Recursivos
+    code_class_recursion = """
+    class Calculadora {
+        Calculadora constructor() {}
+        int fibonacci(int n) {
+            if (n <= 1) {
+                return n;
+            }
+            return this.fibonacci(n - 1) + this.fibonacci(n - 2);
+        }
+    }
+    function void main() {
+        let Calculadora calc = new Calculadora();
+        console.log("Fibonacci de 5:", calc.fibonacci(5));
+    }
+    """
+    expected_class_recursion = "Fibonacci de 5: 5"
+
+    # Teste 9: Atribuição Composta com Incremento no Índice
+    code_compound_inc = """
+    function void main() {
+        let int[3] v = [10, 20, 30];
+        let int i = 0;
+        v[++i] += 5;
+        console.log("v[1]:", v[1], "i:", i);
+    }
+    """
+    expected_compound_inc = "v[1]: 25 i: 1"
+
+    # Teste 10: Laços Aninhados com Break Condicional
+    code_nested_break = """
+    function void main() {
+        let int cont = 0;
+        for (let int i = 0; i < 3; i = i + 1) {
+            for (let int j = 0; j < 3; j = j + 1) {
+                if (j == 1) {
+                    break;
+                }
+                cont = cont + 1;
+            }
+        }
+        console.log("Cont:", cont);
+    }
+    """
+    expected_nested_break = "Cont: 3"
+
+    # Teste 11: Concatenação Múltipla com Cast Implícito
+    code_concat_chain = """
+    function void main() {
+        let str s = "Valores: " + true + " e " + 123 + " e " + 45.6;
+        console.log(s);
+    }
+    """
+    expected_concat_chain = "Valores: true e 123 e 45.6"
+
+    # Teste 12: Precedência Matemática e Notação Científica
+    code_math_prec = """
+    function void main() {
+        let real r = 2.0 * (1.5E2 + 50.0) - 100.0 / 4.0;
+        console.log("Calculo:", r);
+    }
+    """
+    expected_math_prec = "Calculo: 375"
+
+    # Teste 13: Operadores de Atribuição Composta Lógica
+    code_logic_compound = """
+    function void main() {
+        let bool b = true;
+        b &&= false;
+        console.log("b (espera false):", b);
+        b ||= true;
+        console.log("b (espera true):", b);
+    }
+    """
+    expected_logic_compound = """b (espera false): false
+b (espera true): true"""
+
+    # Teste 14: Vetor Inicializado com Expressões Dinâmicas
+    code_array_expressions = """
+    function void main() {
+        let int[3] v = [1 + 2, 3 * 4, 5 - 6];
+        console.log("v[0]:", v[0], "v[1]:", v[1], "v[2]:", v[2]);
+    }
+    """
+    expected_array_expressions = "v[0]: 3 v[1]: 12 v[2]: -1"
+
     success = True
     success &= run_backend_test("Teste 1 - Fatorial", code_fat, expected_fat)
     success &= run_backend_test("Teste 2 - Castings", code_cast, expected_cast)
     success &= run_backend_test("Teste 3 - Classes", code_classes, expected_classes)
     success &= run_backend_test("Teste 4 - Vetores", code_arrays, expected_arrays)
+    success &= run_backend_test("Teste 5 - Curto-circuito", code_short_circuit, expected_short_circuit)
+    success &= run_backend_test("Teste 6 - Lista Encadeada", code_linked_list, expected_linked_list)
+    success &= run_backend_test("Teste 7 - Matriz por Referência", code_matrix_ref, expected_matrix_ref)
+    success &= run_backend_test("Teste 8 - Rec. Classes", code_class_recursion, expected_class_recursion)
+    success &= run_backend_test("Teste 9 - Atrib. Comp. Indice", code_compound_inc, expected_compound_inc)
+    success &= run_backend_test("Teste 10 - Break Aninhado", code_nested_break, expected_nested_break)
+    success &= run_backend_test("Teste 11 - Concatenacao Multipla", code_concat_chain, expected_concat_chain)
+    success &= run_backend_test("Teste 12 - Precedencia Notacao", code_math_prec, expected_math_prec)
+    success &= run_backend_test("Teste 13 - Atrib. Comp. Logica", code_logic_compound, expected_logic_compound)
+    success &= run_backend_test("Teste 14 - Vetor com expressoes", code_array_expressions, expected_array_expressions)
     
     print("\n========================================")
     if success:
