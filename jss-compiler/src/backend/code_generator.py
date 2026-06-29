@@ -279,8 +279,15 @@ class CodeGenerator:
     def visit_IdentifierNode(self, node):
         ptr, llvm_type, jss_type, dimension = self.get_target_pointer(node)
         if dimension is not None:
-            # Para vetores, o próprio ponteiro da alocação é o valor de referência
-            return ptr, llvm_type + "*"
+            if llvm_type.endswith('*'):
+                # Vetor parâmetro (passado por referência, ou seja, tipo* já é o ponteiro).
+                # O ptr na tabela é tipo**, precisamos dar load para obter tipo*
+                reg = self.new_reg()
+                self.emit(f"{reg} = load {llvm_type}, {llvm_type}* {ptr}")
+                return reg, llvm_type
+            else:
+                # Vetor local ou global (alocado como tipo direto, ou seja, seu endereço ptr já é tipo*)
+                return ptr, llvm_type + "*"
         
         reg = self.new_reg()
         self.emit(f"{reg} = load {llvm_type}, {llvm_type}* {ptr}")
