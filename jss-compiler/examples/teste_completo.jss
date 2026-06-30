@@ -29,7 +29,7 @@ function str maiorque(real x, real y){
       return falso;
 }
 
-function void printar(str string){console.log(string + "mas olha aqui esse numero foda: " + 0869);}
+function void printar(str string){console.log(string + " mas olha aqui esse numero foda: " + 0869);}
 
 function void main(){
    let real x,y;
