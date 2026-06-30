@@ -614,7 +614,33 @@ def p_error(p):
     }
     if 'SEMICOLON' in raw_expected:
         buf = getattr(parser, '_buf_lexer', None)
-        if p and p.type in STATEMENT_START_TOKENS and buf:
+        
+        # Check if INCREMENT/DECREMENT is being used postfix.
+        is_postfix_error = False
+        if p and p.type in ('INCREMENT', 'DECREMENT'):
+            source_code = getattr(p.lexer, 'lexdata', '')
+            next_pos = p.lexpos + len(p.value)
+            next_char = ''
+            while next_pos < len(source_code):
+                char = source_code[next_pos]
+                if char.isspace():
+                    next_pos += 1
+                elif char == '/' and next_pos + 1 < len(source_code) and source_code[next_pos + 1] == '/':
+                    next_pos += 2
+                    while next_pos < len(source_code) and source_code[next_pos] != '\n':
+                        next_pos += 1
+                elif char == '/' and next_pos + 1 < len(source_code) and source_code[next_pos + 1] == '*':
+                    next_pos += 2
+                    while next_pos + 1 < len(source_code) and not (source_code[next_pos] == '*' and source_code[next_pos + 1] == '/'):
+                        next_pos += 1
+                    next_pos += 2
+                else:
+                    next_char = char
+                    break
+            if next_char in ('', ';', ')', ']', '}', ','):
+                is_postfix_error = True
+
+        if p and p.type in STATEMENT_START_TOKENS and not is_postfix_error and buf:
             source_code = getattr(p.lexer, 'lexdata', '')
             formatted = format_visual_error(
                 source_code,

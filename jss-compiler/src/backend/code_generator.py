@@ -34,6 +34,7 @@ class CodeGenerator:
         self.label_count = 0
         self.string_count = 0
         self.strings = {}
+        self.var_count = 0
         
         # Estrutura de partições do arquivo de saída .ll
         self.runtime_decls = []
@@ -794,7 +795,8 @@ class CodeGenerator:
                     self._initialize_array_with_defaults(llvm_name, llvm_type, var_type, dimension)
         else:
             # Variável Local
-            llvm_name = f"%{node.name}.addr"
+            self.var_count += 1
+            llvm_name = f"%{node.name}.addr.{self.var_count}"
             self.emit(f"{llvm_name} = alloca {llvm_type}")
             self.current_scope.define(node.name, llvm_name, llvm_type, var_type, dimension)
             
@@ -932,8 +934,11 @@ class CodeGenerator:
             return reg_res, llvm_type
 
     def visit_BlockNode(self, node):
+        old_scope = self.current_scope
+        self.current_scope = Scope(parent=old_scope)
         for stmt in node.statements:
             self.visit(stmt)
+        self.current_scope = old_scope
 
     def visit_IfNode(self, node):
         cond_val, _ = self.visit(node.condition)
@@ -998,6 +1003,9 @@ class CodeGenerator:
         step_label = self.new_label("for.step")
         end_label = self.new_label("for.end")
         
+        old_scope = self.current_scope
+        self.current_scope = Scope(parent=old_scope)
+        
         # Inicialização do loop
         if node.init:
             self.visit(node.init)
@@ -1032,6 +1040,8 @@ class CodeGenerator:
         # Bloco de fim
         self.block_terminated = False
         self.emit(f"\n{end_label}:")
+        
+        self.current_scope = old_scope
 
     def visit_BreakNode(self, node):
         if self.loop_stack:
@@ -1043,6 +1053,9 @@ class CodeGenerator:
         # Salvar o buffer principal e escopo para compilação local de função
         old_buf = self.current_buffer
         old_scope = self.current_scope
+        old_terminated = self.block_terminated
+        old_reg_count = self.reg_count
+        old_label_count = self.label_count
         
         self.current_buffer = []
         self.current_scope = Scope(parent=old_scope)
@@ -1081,7 +1094,8 @@ class CodeGenerator:
         
         # Alocar espaço local para cada parâmetro e copiar valor de entrada
         for name, reg_in, llvm_type, jss_type, dimension in params_allocations:
-            addr_name = f"%{name}.addr"
+            self.var_count += 1
+            addr_name = f"%{name}.addr.{self.var_count}"
             self.emit(f"{addr_name} = alloca {llvm_type}")
             self.emit(f"store {llvm_type} {reg_in}, {llvm_type}* {addr_name}")
             self.current_scope.define(name, addr_name, llvm_type, jss_type, dimension)
@@ -1106,6 +1120,9 @@ class CodeGenerator:
         # Restaurar estado
         self.current_buffer = old_buf
         self.current_scope = old_scope
+        self.block_terminated = old_terminated
+        self.reg_count = old_reg_count
+        self.label_count = old_label_count
         self.current_function_ret_type = None
 
     def visit_ReturnNode(self, node):
@@ -1140,6 +1157,9 @@ class CodeGenerator:
             # Salvar buffer e escopo
             old_buf = self.current_buffer
             old_scope = self.current_scope
+            old_terminated = self.block_terminated
+            old_reg_count = self.reg_count
+            old_label_count = self.label_count
             
             self.current_buffer = []
             self.current_scope = Scope(parent=old_scope)
@@ -1170,14 +1190,16 @@ class CodeGenerator:
             self.emit("entry:")
             
             # Alocar e salvar o 'this' no escopo local
-            this_addr = "%this.addr"
+            self.var_count += 1
+            this_addr = f"%this.addr.{self.var_count}"
             self.emit(f"{this_addr} = alloca %struct.{class_name}*")
             self.emit(f"store %struct.{class_name}* %this, %struct.{class_name}** {this_addr}")
             self.current_scope.define("this", this_addr, f"%struct.{class_name}*", class_name, None)
             
             # Alocar parâmetros locais
             for name, reg_in, llvm_type, jss_type, dimension in params_allocations:
-                addr_name = f"%{name}.addr"
+                self.var_count += 1
+                addr_name = f"%{name}.addr.{self.var_count}"
                 self.emit(f"{addr_name} = alloca {llvm_type}")
                 self.emit(f"store {llvm_type} {reg_in}, {llvm_type}* {addr_name}")
                 self.current_scope.define(name, addr_name, llvm_type, jss_type, dimension)
@@ -1198,6 +1220,9 @@ class CodeGenerator:
             # Restaurar
             self.current_buffer = old_buf
             self.current_scope = old_scope
+            self.block_terminated = old_terminated
+            self.reg_count = old_reg_count
+            self.label_count = old_label_count
             self.current_function_ret_type = None
 
     def visit_ClassConstructorNode(self, node):
@@ -1205,6 +1230,9 @@ class CodeGenerator:
         
         old_buf = self.current_buffer
         old_scope = self.current_scope
+        old_terminated = self.block_terminated
+        old_reg_count = self.reg_count
+        old_label_count = self.label_count
         
         self.current_buffer = []
         self.current_scope = Scope(parent=old_scope)
@@ -1234,14 +1262,16 @@ class CodeGenerator:
         self.emit("entry:")
         
         # Salvar o 'this'
-        this_addr = "%this.addr"
+        self.var_count += 1
+        this_addr = f"%this.addr.{self.var_count}"
         self.emit(f"{this_addr} = alloca %struct.{class_name}*")
         self.emit(f"store %struct.{class_name}* %this, %struct.{class_name}** {this_addr}")
         self.current_scope.define("this", this_addr, f"%struct.{class_name}*", class_name, None)
         
         # Alocar parâmetros locais
         for name, reg_in, llvm_type, jss_type, dimension in params_allocations:
-            addr_name = f"%{name}.addr"
+            self.var_count += 1
+            addr_name = f"%{name}.addr.{self.var_count}"
             self.emit(f"{addr_name} = alloca {llvm_type}")
             self.emit(f"store {llvm_type} {reg_in}, {llvm_type}* {addr_name}")
             self.current_scope.define(name, addr_name, llvm_type, jss_type, dimension)
@@ -1262,6 +1292,9 @@ class CodeGenerator:
         # Restaurar
         self.current_buffer = old_buf
         self.current_scope = old_scope
+        self.block_terminated = old_terminated
+        self.reg_count = old_reg_count
+        self.label_count = old_label_count
         self.current_function_ret_type = None
 
     def visit_ConsoleLogNode(self, node):
