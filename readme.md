@@ -6,26 +6,21 @@ O compilador integra:
 1. **Análise Léxica (`lexer.py`):** Reconhecimento de tokens e detecção de caracteres/padrões inválidos.
 2. **Análise Sintática (`parser.py`):** Validação gramatical e construção da Árvore de Sintaxe Abstrata (AST) com recuperação de erros sintáticos (sincronização de chaves).
 3. **Análise Semântica (`semantic.py`):** Validação de escopos, tipos, constantes, passagem de vetores por parâmetro (validação estática de tamanho), limites de índices de vetores (validação de out of bounds para índices constantes) e propagação segura de tipos inválidos para evitar o efeito cascata.
-4. **Geração de Código LLVM IR (`code_generator.py`):** Tradução completa da AST do JSS para código textual LLVM IR (`.ll`).
-5. **Runtime de Suporte em C (`runtime.c`):** Biblioteca auxiliar que implementa funções do sistema (E/S, conversão e concatenação de strings, potência inteira) para ser vinculada ao binário nativo final.
+4. **Geração de Código LLVM IR (`code_generator.py`):** Tradução completa da AST do JSS para um módulo LLVM, construído programaticamente com a API `llvmlite.ir` (nenhum código LLVM é montado como texto solto).
+5. **Runtime de Suporte (`runtime_ir.py`):** Biblioteca auxiliar que implementa funções do sistema (E/S, conversão e concatenação de strings, potência inteira), escrita diretamente como funções LLVM IR (via `llvmlite.ir`) e injetada no mesmo módulo do programa do usuário - substitui o antigo `runtime.c`, eliminando qualquer dependência de compilar código C.
 
 ---
 
 ## 1. Instalação e Configuração
 
-O compilador exige **Python 3.10** ou superior e o compilador **Clang (LLVM)** para gerar binários nativos executáveis.
+O compilador exige **Python 3.10** ou superior. Diferente de versões anteriores, **não é mais necessário instalar o Clang** (nem qualquer outro compilador C): a própria `llvmlite` (biblioteca Python que embute a LLVM) faz a tradução do IR para código de máquina x86-64.
 
-1. Instale a dependência do PLY (Python Lex-Yacc):
+1. Instale as dependências (PLY e llvmlite):
    ```bash
    pip install -r jss-compiler/requirements.txt
    ```
 
-2. **Compilador Clang (LLVM):**
-   * **Opção Portátil (Recomendada):** Já disponibilizamos uma versão portátil em `compilador/llvm-mingw` no diretório. O compilador em `main.py` irá detectá-la e utilizá-la automaticamente!
-   * **Instalação Global (Opcional):**
-     * **Windows:** execute `winget install LLVM.LLVM`
-     * **Linux (Ubuntu/Debian):** execute `sudo apt install clang`
-     * **macOS:** execute `brew install llvm`
+2. **Linker (`ld.lld`):** a única ferramenta externa que ainda é necessária é um *linker* - não um compilador - para transformar o código objeto x86-64 gerado pela `llvmlite` em um `.exe` do Windows, vinculando-o ao runtime C do sistema (`msvcrt`, para `printf`/`scanf`/`malloc`). Já disponibilizamos um kit portátil com o `ld.lld` em `compilador/llvm-mingw`, que o `main.py` detecta e utiliza automaticamente. Este kit não precisa ser instalado à parte: basta que a pasta `llvm-mingw/` exista na raiz do repositório.
 
 ---
 
@@ -35,8 +30,9 @@ A execução é centralizada no arquivo `jss-compiler/src/main.py`.
 
 Quando executado sobre um arquivo `.jss`, o compilador:
 1. Executa as fases de Front-End (Léxico, Sintático e Semântico).
-2. Se não houver erros, gera o arquivo intermediário `.ll` (LLVM IR).
-3. Invoca o `clang` para compilar o arquivo `.ll` junto com o runtime de suporte (`runtime.c`), gerando um executável nativo `.exe` (ou executável ELF no Linux/macOS).
+2. Se não houver erros, constrói o módulo LLVM (via `llvmlite.ir`) e grava sua representação textual no arquivo intermediário `.ll`, para inspeção.
+3. Usa `llvmlite.binding` (a própria LLVM) para traduzir esse módulo diretamente em código objeto x86-64 nativo (`.o`) - sem invocar nenhum compilador C.
+4. Invoca o linker `ld.lld` (parte do projeto LLVM, empacotado em `llvm-mingw/`) para vincular esse objeto ao runtime C do Windows e gerar o executável nativo `.exe` final.
 
 ### A. Compilando um Arquivo de Exemplo
 ```bash
@@ -91,7 +87,7 @@ python jss-compiler/tests/run_all_tests.py
 O Back-End suporta a compilação de todas as construções da linguagem JSS:
 - **Controle de Fluxo e Loops:** Estruturas `if-else`, loops `while` e `for`, suporte a desvio incondicional `break`.
 - **Expressões Lógicas de Curto-Circuito:** Implementação robusta das operações `&&` e `||` com blocos e instruções `phi` do LLVM.
-- **Tipagem Dinâmica e Coerção:** Conversão segura de inteiros para reais e formatação/concatenação implícita de strings chamando o runtime C.
+- **Tipagem Dinâmica e Coerção:** Conversão segura de inteiros para reais e formatação/concatenação implícita de strings chamando o runtime (`runtime_ir.py`).
 - **Vetores Unidimensionais e Bidimensionais:** Alocação de memória linearizada na stack (`alloca`) e indexação recursiva via `getelementptr`.
 - **Programação Orientada a Objetos (Classes):** Classes mapeadas para estruturas (`%struct`), instanciação com alocação dinâmica (`malloc`), chamadas de métodos e construtores passando a referência implícita `this`, e comparação de ponteiros de objetos com `null`.
 

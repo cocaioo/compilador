@@ -1,7 +1,40 @@
-"""Gerador de código LLVM IR para a linguagem JSS.
+"""Gerador de código para a linguagem JSS, usando a API `llvmlite.ir`.
 
-Responsável por percorrer a AST e traduzir suas estruturas para o formato textual .ll.
+Como este gerador funciona
+----------------------------
+O compilador percorre a AST (a árvore que o `parser.py` construiu) uma vez,
+visitando cada nó com um método `visit_<TipoDoNo>` (o clássico "padrão
+Visitor"). Cada visitante devolve o valor LLVM correspondente ao nó (uma
+constante ou o resultado de uma instrução) e o seu tipo LLVM.
+
+A diferença para uma versão anterior deste arquivo é *como* as instruções
+LLVM são criadas: em vez de montar cada linha como texto (`f"{r} = add i32
+{a}, {b}"`) e concatenar tudo em uma grande string `.ll`, aqui usamos a API
+orientada a objetos `llvmlite.ir`. Cada instrução vira uma chamada de método
+do `IRBuilder` (`builder.add(a, b)`), e o resultado é um objeto Python que
+"sabe" seu próprio tipo LLVM - não existe mais texto para formatar ou
+analisar. Isso elimina uma classe inteira de bugs bobos (nomes de registrador
+duplicados, tipos escritos errado, blocos mal fechados) porque quem garante
+a validade sintática do IR agora é a própria biblioteca, não nós.
+
+Alguns conceitos de LLVM usados neste arquivo, para quem está lendo pela
+primeira vez:
+- `alloca`: reserva espaço na pilha da função atual para uma variável -
+  o equivalente LLVM de declarar uma variável local em C.
+- Bloco básico (`basic block`): uma sequência de instruções que só pode ser
+  entrada pelo topo e só sai pelo fim, através de uma instrução terminadora
+  (`br`/`ret`). Todo desvio de controle (`if`, `while`, `for`, curto-
+  circuito de `&&`/`||`) em LLVM vira uma divisão em múltiplos blocos ligados
+  por `br` (desvio incondicional) ou `br i1 cond, ...` (desvio condicional).
+- `phi`: a forma que o LLVM usa para dizer "o valor desta variável depende de
+  por qual bloco anterior a execução chegou até aqui" - é como resolvemos o
+  resultado de `a && b` sem nunca ter avaliado `b` quando `a` já era falso.
+- `getelementptr` (GEP): calcula o *endereço* de um elemento dentro de um
+  vetor ou de um campo dentro de uma struct, sem ler memória nenhuma - só
+  aritmética de ponteiros guiada pelos tipos.
 """
+
+import llvmlite.ir as ir
 
 from frontend.ast_nodes import (
     ProgramNode, VarDeclarationNode, AssignmentNode, BlockNode,
@@ -11,11 +44,44 @@ from frontend.ast_nodes import (
     NewObjectNode, ConsoleLogNode, InputNode, CastNode, NumberNode,
     StringNode, BooleanNode, NullNode, IdentifierNode
 )
+from backend.runtime_ir import build_runtime
+
+# --- Triple/datalayout do alvo de compilação (Windows x86-64 via MinGW) ---
+# `main.py` usa exatamente os mesmos valores para configurar o TargetMachine
+# que converte este módulo em código objeto x86 - manter os dois em sincronia
+# aqui evita que o LLVM avise sobre incompatibilidade entre o módulo e o alvo.
+TARGET_TRIPLE = "x86_64-w64-windows-gnu"
+TARGET_DATALAYOUT = (
+    "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+)
+
+# --- Tipos LLVM correspondentes aos tipos primitivos do JSS ---
+i1 = ir.IntType(1)          # bool
+i32 = ir.IntType(32)        # int
+i64 = ir.IntType(64)        # usado em cálculos de tamanho (bytes)
+f64 = ir.DoubleType()       # real
+i8p = ir.PointerType(ir.IntType(8))  # str (equivalente a "char*")
+void = ir.VoidType()
+
+
+def _zero32():
+    """Atalho para a constante i32 0, usada em quase todo `getelementptr`."""
+    return ir.Constant(i32, 0)
+
 
 class Scope:
+    """Uma tabela de símbolos encadeada (escopo léxico).
+
+    Cada bloco `{ ... }`, função, método ou construtor abre um novo `Scope`
+    que aponta para o escopo onde ele está aninhado (`parent`). Procurar uma
+    variável (`lookup`) primeiro olha no escopo atual e, se não achar, sobe
+    para o escopo pai - exatamente como a resolução de nomes de blocos
+    aninhados funciona na própria linguagem JSS.
+    """
+
     def __init__(self, parent=None):
         self.parent = parent
-        self.vars = {}  # nome_jss -> (llvm_ptr, llvm_type, jss_type, dimension)
+        self.vars = {}  # nome_jss -> (ponteiro_llvm, tipo_llvm, tipo_jss, dimensao)
 
     def define(self, name, llvm_ptr, llvm_type, jss_type, dimension=None):
         self.vars[name] = (llvm_ptr, llvm_type, jss_type, dimension)
@@ -29,221 +95,221 @@ class Scope:
 
 
 class CodeGenerator:
+    """Percorre a AST do JSS e constrói um `llvmlite.ir.Module` equivalente."""
+
     def __init__(self):
-        self.reg_count = 0
-        self.label_count = 0
-        self.string_count = 0
-        self.strings = {}
-        self.var_count = 0
-        
-        # Estrutura de partições do arquivo de saída .ll
-        self.runtime_decls = []
-        self.struct_decls = []
-        self.global_decls = []
-        self.const_decls = []
-        self.func_decls = []
-        self.main_code = []
-        
-        self.current_buffer = self.main_code
+        # Cada CodeGenerator usa seu próprio `Context`: isso evita que tipos de
+        # struct com o mesmo nome (ex.: duas compilações na mesma execução do
+        # Python, como acontece nos testes) colidam entre si no contexto
+        # global padrão da llvmlite.
+        self.context = ir.Context()
+        self.module = ir.Module(name="jss_module", context=self.context)
+        self.module.triple = TARGET_TRIPLE
+        self.module.data_layout = TARGET_DATALAYOUT
+
+        self.builder = None                 # IRBuilder do bloco sendo preenchido no momento
+        self.current_function = None        # ir.Function sendo compilada no momento
+        self.current_function_ret_type = None
+
         self.current_scope = Scope()
-        self.loop_stack = []
-        self.block_terminated = False
-        
-        # Mapeamento de classes: nome -> { 'attrs': [nomes], 'attr_types': {nome: jss_type}, 'attr_dims': {nome: dim} }
+        self.loop_stack = []                # pilha de blocos "fim do laço", usada pelo `break`
+
+        self.strings = {}                   # cache de constantes de string do programa do usuário
+
+        # class_name -> {'attrs', 'attr_types', 'attr_dims', 'struct_type', 'methods', 'constructor'}
         self.classes = {}
-        
-        # Mapeamento de assinaturas de funções globais: nome -> (jss_return_type, return_dim, [jss_param_types])
-        self.functions_sig = {}
-        
-        self._setup_runtime_declarations()
+        # nome_da_funcao_jss -> ir.Function (já com a assinatura completa)
+        self.user_functions = {}
 
-    def _setup_runtime_declarations(self):
-        self.runtime_decls.extend([
-            "declare void @print_int(i32)",
-            "declare void @print_real(double)",
-            "declare void @print_str(i8*)",
-            "declare void @print_bool(i1)",
-            "declare void @print_space()",
-            "declare void @print_newline()",
-            "declare i32 @read_int()",
-            "declare double @read_real()",
-            "declare i8* @read_str()",
-            "declare i8* @str_concat(i8*, i8*)",
-            "declare i8* @int_to_str(i32)",
-            "declare i8* @real_to_str(double)",
-            "declare i8* @bool_to_str(i1)",
-            "declare i32 @ipow(i32, i32)",
-            "declare i8* @malloc(i64)"
-        ])
+        # Injeta print_int, str_concat, ipow, etc. no mesmo módulo - ver runtime_ir.py
+        self.runtime = build_runtime(self.module)
 
-    def emit(self, instruction):
-        if not self.block_terminated:
-            self.current_buffer.append(instruction)
-
-    def new_reg(self):
-        self.reg_count += 1
-        return f"%r.{self.reg_count}"
-
-    def new_label(self, prefix="label"):
-        self.label_count += 1
-        return f"{prefix}.{self.label_count}"
-
-    def get_llvm_type(self, jss_type, dimension=None):
-        base = ""
-        if jss_type == 'int':
-            base = 'i32'
-        elif jss_type == 'real':
-            base = 'double'
-        elif jss_type == 'bool':
-            base = 'i1'
-        elif jss_type == 'str':
-            base = 'i8*'
-        elif jss_type == 'void':
-            base = 'void'
-        else:
-            # Classes são ponteiros para structs
-            base = f"%struct.{jss_type}*"
-
-        if dimension is not None:
-            if isinstance(dimension, list):
-                dims = dimension
-            else:
-                dims = [dimension]
-            t = base
-            for d in reversed(dims):
-                t = f"[{d} x {t}]"
-            return t
-        return base
-
-    def get_default_value(self, llvm_type):
-        if llvm_type == 'i32':
-            return '0'
-        elif llvm_type == 'double':
-            return '0.000000e+00'
-        elif llvm_type == 'i1':
-            return 'false'
-        elif llvm_type == 'i8*':
-            return 'null'
-        elif llvm_type.endswith('*'):
-            return 'null'
-        elif llvm_type.startswith('['):
-            return 'zeroinitializer'
-        return 'null'
-
-    def to_llvm_escaped_string(self, s):
-        res = []
-        i = 0
-        while i < len(s):
-            c = s[i]
-            if c == '"':
-                res.append("\\22")
-            elif c == '\\':
-                res.append("\\5C")
-            elif ord(c) < 32 or ord(c) > 126:
-                res.append(f"\\{ord(c):02X}")
-            else:
-                res.append(c)
-            i += 1
-        return "".join(res)
-
-    def get_or_create_string_constant(self, s):
-        if s in self.strings:
-            return self.strings[s]
-        
-        self.string_count += 1
-        name = f"@.str.{self.string_count}"
-        escaped = self.to_llvm_escaped_string(s)
-        # LLVM precisa do terminador nulo \00
-        length = len(s) + 1
-        
-        # Calcular o comprimento real considerando os caracteres especiais
-        # A string original decodificada em Python tem len(s) caracteres + 1 nulo.
-        self.const_decls.append(f"{name} = private unnamed_addr constant [{length} x i8] c\"{escaped}\\00\"")
-        self.strings[s] = (name, length)
-        return name, length
-
-    def generate(self, ast):
-        # 1. Primeira passada para coletar declarações globais de funções e classes
-        self._preprocess_declarations(ast)
-        
-        # 2. Segunda passada para gerar código
-        self.visit(ast)
-        
-        # 3. Concatenar todo o código gerado em uma única string textual
-        lines = []
-        lines.append("; --- DECLARAÇÕES RUNTIME ---")
-        lines.extend(self.runtime_decls)
-        lines.append("")
-        
-        if self.struct_decls:
-            lines.append("; --- DECLARAÇÕES DE CLASSES ---")
-            lines.extend(self.struct_decls)
-            lines.append("")
-            
-        if self.const_decls:
-            lines.append("; --- CONSTANTES DE STRING ---")
-            lines.extend(self.const_decls)
-            lines.append("")
-            
-        if self.global_decls:
-            lines.append("; --- VARIÁVEIS GLOBAIS ---")
-            lines.extend(self.global_decls)
-            lines.append("")
-            
-        if self.func_decls:
-            lines.append("; --- FUNÇÕES DO USUÁRIO ---")
-            lines.extend(self.func_decls)
-            lines.append("")
-            
-        # Adicionar o entrypoint principal @main do LLVM
-        lines.append("; --- ENTRY POINT ---")
-        lines.append("define i32 @main() {")
-        lines.append("entry:")
-        for code_line in self.main_code:
-            lines.append("    " + code_line)
-            
-        # Verificar se o usuário definiu uma função main global
-        if 'main' in self.functions_sig:
-            lines.append("    call void @_jss_main()")
-            
-        lines.append("    ret i32 0")
-        lines.append("}")
-        
-        return "\n".join(lines)
+    # ------------------------------------------------------------------
+    # Pré-processamento: declarar todos os tipos e assinaturas primeiro
+    # ------------------------------------------------------------------
+    #
+    # Antes de compilar qualquer corpo de função/método, percorremos a AST
+    # uma vez só para criar (sem preencher) todos os tipos de struct e todas
+    # as assinaturas de função/método/construtor. Isso é o que permite:
+    #   - chamadas recursivas (uma função/método chamar a si mesma);
+    #   - chamar uma função definida mais adiante no arquivo-fonte;
+    #   - duas classes referenciarem uma à outra como tipo de atributo.
+    # Sem isso, `Node prox` dentro da própria classe `Node` (uma lista
+    # encadeada) não teria como ser compilado, porque o tipo `struct.Node`
+    # ainda não existiria no momento de processar seu próprio atributo.
 
     def _preprocess_declarations(self, ast):
         if not isinstance(ast, ProgramNode):
             return
-        
-        for stmt in ast.statements:
-            if isinstance(stmt, ClassDeclarationNode):
-                # Registrar a classe e coletar seus atributos
-                class_name = stmt.name
-                attrs = []
-                attr_types = {}
-                attr_dims = {}
-                for attr in stmt.attributes:
-                    attrs.append(attr.name)
-                    attr_types[attr.name] = attr.var_type
-                    attr_dims[attr.name] = attr.dimension
-                
-                self.classes[class_name] = {
-                    'attrs': attrs,
-                    'attr_types': attr_types,
-                    'attr_dims': attr_dims
-                }
-                
-                # Gerar a declaração de struct no LLVM
-                fields_llvm = []
-                for attr_name in attrs:
-                    llvm_t = self.get_llvm_type(attr_types[attr_name], attr_dims[attr_name])
-                    fields_llvm.append(llvm_t)
-                fields_str = ", ".join(fields_llvm)
-                self.struct_decls.append(f"%struct.{class_name} = type {{ {fields_str} }}")
-                
-            elif isinstance(stmt, FunctionNode):
-                param_types = [p[0] for p in stmt.params]
-                self.functions_sig[stmt.name] = (stmt.return_type, stmt.return_dimension, param_types)
+
+        class_nodes = [s for s in ast.statements if isinstance(s, ClassDeclarationNode)]
+        function_nodes = [s for s in ast.statements if isinstance(s, FunctionNode)]
+
+        # 1) Criar os tipos de struct de cada classe, ainda "vazios" (sem campos).
+        #    Um IdentifiedStructType pode ser referenciado antes de ter seu corpo
+        #    definido - é exatamente esse mecanismo que resolve referências
+        #    circulares entre classes.
+        for stmt in class_nodes:
+            struct_ty = self.context.get_identified_type(f"struct.{stmt.name}")
+            self.classes[stmt.name] = {
+                'attrs': [], 'attr_types': {}, 'attr_dims': {},
+                'struct_type': struct_ty, 'methods': {}, 'constructor': None,
+            }
+
+        # 2) Agora que todo tipo de struct já existe (ainda que vazio), preencher
+        #    os campos de cada um - inclusive os que apontam para outra classe.
+        for stmt in class_nodes:
+            info = self.classes[stmt.name]
+            fields = []
+            for attr in stmt.attributes:
+                info['attrs'].append(attr.name)
+                info['attr_types'][attr.name] = attr.var_type
+                info['attr_dims'][attr.name] = attr.dimension
+                fields.append(self.get_llvm_type(attr.var_type, attr.dimension))
+            info['struct_type'].set_body(*fields)
+
+        # 3) Pré-declarar a assinatura de cada função global.
+        for stmt in function_nodes:
+            self.user_functions[stmt.name] = self._declare_function_signature(stmt)
+
+        # 4) Pré-declarar o construtor e os métodos de cada classe.
+        for stmt in class_nodes:
+            info = self.classes[stmt.name]
+            if stmt.constructor:
+                info['constructor'] = self._declare_constructor_signature(stmt.constructor, stmt.name)
+            for m in stmt.methods:
+                info['methods'][m.name] = self._declare_method_signature(m, stmt.name)
+
+    def _param_llvm_types(self, params):
+        """Converte a lista de parâmetros da AST (tipo, nome[, dimensão]) em tipos LLVM.
+
+        Vetores são passados por referência (um ponteiro para o vetor), então
+        seu tipo LLVM de parâmetro é sempre um ponteiro, mesmo que a variável
+        local correspondente, dentro da função, seja um vetor "de verdade".
+        """
+        types = []
+        for p in params:
+            p_type = p[0]
+            p_dim = p[2] if len(p) > 2 else None
+            t = self.get_llvm_type(p_type, p_dim)
+            if p_dim is not None:
+                t = ir.PointerType(t)
+            types.append(t)
+        return types
+
+    def _declare_function_signature(self, node):
+        ret_type = self.get_llvm_type(node.return_type, node.return_dimension)
+        param_types = self._param_llvm_types(node.params)
+        fnty = ir.FunctionType(ret_type, param_types)
+        # "main" do JSS não pode se chamar "main" no LLVM: esse nome é
+        # reservado para o verdadeiro ponto de entrada do executável nativo,
+        # construído em `generate()`.
+        llvm_name = "_jss_main" if node.name == 'main' else node.name
+        return ir.Function(self.module, fnty, name=llvm_name)
+
+    def _declare_method_signature(self, node, class_name):
+        ret_type = self.get_llvm_type(node.return_type, node.return_dimension)
+        this_ptr_ty = ir.PointerType(self.classes[class_name]['struct_type'])
+        param_types = [this_ptr_ty] + self._param_llvm_types(node.params)
+        fnty = ir.FunctionType(ret_type, param_types)
+        return ir.Function(self.module, fnty, name=f"{class_name}_{node.name}")
+
+    def _declare_constructor_signature(self, node, class_name):
+        this_ptr_ty = ir.PointerType(self.classes[class_name]['struct_type'])
+        param_types = [this_ptr_ty] + self._param_llvm_types(node.params)
+        fnty = ir.FunctionType(void, param_types)  # construtores não retornam valor
+        return ir.Function(self.module, fnty, name=f"{class_name}_constructor")
+
+    # ------------------------------------------------------------------
+    # Tipos e valores auxiliares
+    # ------------------------------------------------------------------
+
+    def get_llvm_type(self, jss_type, dimension=None):
+        """Traduz um tipo JSS (e sua dimensão de vetor, se houver) para um tipo `llvmlite.ir`."""
+        if jss_type == 'int':
+            base = i32
+        elif jss_type == 'real':
+            base = f64
+        elif jss_type == 'bool':
+            base = i1
+        elif jss_type == 'str':
+            base = i8p
+        elif jss_type == 'void':
+            base = void
+        else:
+            # Um tipo que não é primitivo só pode ser o nome de uma classe;
+            # objetos do JSS são sempre manipulados por referência (ponteiro).
+            base = ir.PointerType(self.classes[jss_type]['struct_type'])
+
+        if dimension is not None:
+            dims = dimension if isinstance(dimension, list) else [dimension]
+            t = base
+            for d in reversed(dims):
+                t = ir.ArrayType(t, d)
+            return t
+        return base
+
+    def get_default_value(self, llvm_type):
+        """Valor "zerado" de um tipo LLVM: 0 para números, false para bool, ponteiro
+        nulo para ponteiros e "zeroinitializer" (todos os elementos zerados) para
+        vetores - tudo isso de uma vez, porque `ir.Constant(tipo, None)` já sabe
+        gerar a constante zero correta para qualquer tipo LLVM.
+        """
+        return ir.Constant(llvm_type, None)
+
+    def get_or_create_string_constant(self, s):
+        """Devolve um ponteiro i8* constante para a string literal `s`.
+
+        Strings literais idênticas compartilham a mesma constante global
+        (cache em `self.strings`), assim como duas aparições do mesmo texto
+        `"erro"` no código-fonte não geram duas cópias na seção de dados do
+        executável final.
+        """
+        if s in self.strings:
+            return self.strings[s]
+
+        data = bytearray(s.encode('utf8') + b'\x00')
+        arr_ty = ir.ArrayType(ir.IntType(8), len(data))
+        gv = ir.GlobalVariable(self.module, arr_ty, name=f"str.{len(self.strings)}")
+        gv.global_constant = True
+        gv.linkage = 'private'
+        gv.unnamed_addr = True
+        gv.initializer = ir.Constant(arr_ty, data)
+
+        ptr = gv.gep([_zero32(), _zero32()])
+        self.strings[s] = ptr
+        return ptr
+
+    # ------------------------------------------------------------------
+    # Ponto de entrada da geração de código
+    # ------------------------------------------------------------------
+
+    def generate(self, ast):
+        """Compila a AST inteira e devolve o `llvmlite.ir.Module` resultante.
+
+        A função `@main` do executável (a que o CRT do sistema chama para
+        iniciar o programa) é criada aqui: qualquer instrução de nível
+        superior do arquivo `.jss` (por exemplo, a inicialização de uma
+        variável global) é compilada diretamente dentro dela. No final, se o
+        usuário declarou sua própria `function void main() { ... }` no JSS,
+        chamamos essa função (renomeada para `_jss_main`, ver
+        `_declare_function_signature`) antes de retornar.
+        """
+        self._preprocess_declarations(ast)
+
+        main_fnty = ir.FunctionType(i32, [])
+        self.current_function = ir.Function(self.module, main_fnty, name="main")
+        self.builder = ir.IRBuilder(self.current_function.append_basic_block("entry"))
+        self.current_function_ret_type = i32
+
+        self.visit(ast)
+
+        if 'main' in self.user_functions:
+            self.builder.call(self.user_functions['main'], [])
+
+        self.builder.ret(ir.Constant(i32, 0))
+
+        return self.module
 
     def visit_ProgramNode(self, node):
         for stmt in node.statements:
@@ -256,1076 +322,648 @@ class CodeGenerator:
         visitor = getattr(self, method_name)
         return visitor(node)
 
-    # --- VISITORES DE EXPRESSÃO (Retornam (llvm_val, llvm_type)) ---
+    # ------------------------------------------------------------------
+    # Visitantes de expressão (devolvem sempre um par (valor_llvm, tipo_llvm))
+    # ------------------------------------------------------------------
 
     def visit_NumberNode(self, node):
         if node.is_real:
-            # Exibir real com formatação científica padrão do LLVM
-            return f"{float(node.value):e}", "double"
-        else:
-            return str(node.value), "i32"
+            return ir.Constant(f64, float(node.value)), f64
+        return ir.Constant(i32, int(node.value)), i32
 
     def visit_StringNode(self, node):
-        name, length = self.get_or_create_string_constant(node.value)
-        reg = self.new_reg()
-        self.emit(f"{reg} = getelementptr inbounds [{length} x i8], [{length} x i8]* {name}, i32 0, i32 0")
-        return reg, "i8*"
+        return self.get_or_create_string_constant(node.value), i8p
 
     def visit_BooleanNode(self, node):
-        return "true" if node.value else "false", "i1"
+        return ir.Constant(i1, 1 if node.value else 0), i1
 
     def visit_NullNode(self, node):
-        return "null", "i8*"
+        return ir.Constant(i8p, None), i8p
 
     def visit_IdentifierNode(self, node):
         ptr, llvm_type, jss_type, dimension = self.get_target_pointer(node)
         if dimension is not None:
-            if llvm_type.endswith('*'):
-                # Vetor parâmetro (passado por referência, ou seja, tipo* já é o ponteiro).
-                # O ptr na tabela é tipo**, precisamos dar load para obter tipo*
-                reg = self.new_reg()
-                self.emit(f"{reg} = load {llvm_type}, {llvm_type}* {ptr}")
-                return reg, llvm_type
-            else:
-                # Vetor local ou global (alocado como tipo direto, ou seja, seu endereço ptr já é tipo*)
-                return ptr, llvm_type + "*"
-        
-        reg = self.new_reg()
-        self.emit(f"{reg} = load {llvm_type}, {llvm_type}* {ptr}")
-        return reg, llvm_type
+            if isinstance(llvm_type, ir.PointerType):
+                # Vetor recebido como parâmetro (passado por referência): o que está
+                # guardado em `ptr` é um ponteiro-para-ponteiro, então precisamos de
+                # um `load` para obter o ponteiro real do vetor.
+                return self.builder.load(ptr), llvm_type
+            # Vetor local/global: seu próprio endereço já É o ponteiro do vetor
+            # (vetores "decaem" para ponteiro ao serem usados como valor).
+            return ptr, ir.PointerType(llvm_type)
+        return self.builder.load(ptr), llvm_type
 
     def get_target_pointer(self, node):
+        """Calcula o *endereço* (não o valor) de um alvo atribuível: uma variável,
+        um elemento de vetor (`v[i]`) ou um atributo de objeto (`obj.attr`).
+
+        Devolve sempre `(ponteiro, tipo_llvm_do_conteudo, tipo_jss, dimensao)`.
+        É o método central usado tanto para *ler* quanto para *escrever*
+        (atribuição, `++`/`--`, `input(...)`) nesses três tipos de alvo.
+        """
         if isinstance(node, IdentifierNode):
             res = self.current_scope.lookup(node.name)
-            if res:
-                return res  # (llvm_ptr, llvm_type, jss_type, dimension)
-            # Se for global
-            llvm_gname = f"@g_{node.name}"
-            # Precisamos inferir o tipo global
-            # Por segurança, deve estar mapeado se foi declarado
-            return llvm_gname, "i8*", "invalid", None
-            
+            if res is None:
+                # A análise semântica já deveria ter barrado identificadores não
+                # declarados antes de chegarmos aqui - se isso disparar, é sinal
+                # de um bug no gerador de código, não um erro do programa JSS.
+                raise ValueError(f"Identificador '{node.name}' nao encontrado no escopo.")
+            return res
+
         elif isinstance(node, ArrayAccessNode):
             array_ptr, array_type = self.visit(node.array_expr)
-            index_val, index_type = self.visit(node.index_expr)
-            
-            # array_type é tipo de array apontado, ex: [3 x i32]* ou [3 x [4 x i32]]*
-            # precisamos obter a parte interna do array
-            # Ex: se array_type é [3 x i32]*, o tipo base é [3 x i32]
-            base_type = array_type[:-1] # Remove o '*'
-            
-            # Determinar o tipo do elemento
-            # Se base_type é [3 x i32], elemento é i32. Se for [3 x [4 x i32]], elemento é [4 x i32]
-            # O formato é sempre "[N x Resto]"
-            parts = base_type.split(" x ", 1)
-            elem_type = parts[1][:-1] if parts[1].endswith(']') else parts[1]
-            
-            reg = self.new_reg()
-            self.emit(f"{reg} = getelementptr {base_type}, {array_type} {array_ptr}, i32 0, i32 {index_val}")
-            
-            # O retorno é o ponteiro para o elemento (ex: i32*) e o tipo de elemento (i32)
-            # Mas o dimension do elemento resultante reduz em 1
-            return reg, elem_type, "array_elem", None
-            
+            index_val, _ = self.visit(node.index_expr)
+            # `array_type` é sempre um ponteiro para vetor (ex.: [3 x i32]* ou,
+            # em vetores multidimensionais, [3 x [4 x i32]]*). O elemento é o
+            # tipo interno do vetor apontado - o próprio sistema de tipos da
+            # llvmlite responde isso, sem precisar recortar texto manualmente.
+            elem_type = array_type.pointee.element
+            ptr = self.builder.gep(array_ptr, [_zero32(), index_val], inbounds=True)
+            return ptr, elem_type, "array_elem", None
+
         elif isinstance(node, AttributeAccessNode):
-            obj_reg, obj_type = self.visit(node.object_expr)
-            # obj_type deve ser %struct.ClassName*
-            class_name = obj_type[8:-1] # Remove %struct. e *
+            obj_ptr, obj_type = self.visit(node.object_expr)
+            class_name = obj_type.pointee.name.split(".", 1)[1]
             class_info = self.classes[class_name]
-            
+
             attr_name = node.attribute_name
             attr_idx = class_info['attrs'].index(attr_name)
             attr_jss_type = class_info['attr_types'][attr_name]
             attr_dim = class_info['attr_dims'][attr_name]
             attr_llvm_type = self.get_llvm_type(attr_jss_type, attr_dim)
-            
-            reg = self.new_reg()
-            self.emit(f"{reg} = getelementptr %struct.{class_name}, %struct.{class_name}* {obj_reg}, i32 0, i32 {attr_idx}")
-            return reg, attr_llvm_type, attr_jss_type, attr_dim
-            
-        raise ValueError(f"Nó de destino inválido: {type(node).__name__}")
+
+            ptr = self.builder.gep(obj_ptr, [_zero32(), ir.Constant(i32, attr_idx)], inbounds=True)
+            return ptr, attr_llvm_type, attr_jss_type, attr_dim
+
+        raise ValueError(f"No de destino invalido: {type(node).__name__}")
 
     def visit_ArrayAccessNode(self, node):
-        ptr, llvm_type, jss_type, dimension = self.get_target_pointer(node)
-        if dimension is not None or llvm_type.startswith('['):
-            return ptr, llvm_type + "*"
-        
-        reg = self.new_reg()
-        self.emit(f"{reg} = load {llvm_type}, {llvm_type}* {ptr}")
-        return reg, llvm_type
+        ptr, llvm_type, _, dimension = self.get_target_pointer(node)
+        if dimension is not None or isinstance(llvm_type, ir.ArrayType):
+            # O próprio elemento acessado ainda é um vetor (acesso parcial em uma
+            # matriz, ex.: `m[0]` de um `int[2][3]`) - devolvemos seu endereço,
+            # não um valor carregado, para permitir indexação encadeada `m[0][1]`.
+            return ptr, ir.PointerType(llvm_type)
+        return self.builder.load(ptr), llvm_type
 
     def visit_AttributeAccessNode(self, node):
-        ptr, llvm_type, jss_type, dimension = self.get_target_pointer(node)
-        if dimension is not None or llvm_type.startswith('['):
-            return ptr, llvm_type + "*"
-            
-        reg = self.new_reg()
-        self.emit(f"{reg} = load {llvm_type}, {llvm_type}* {ptr}")
-        return reg, llvm_type
+        ptr, llvm_type, _, dimension = self.get_target_pointer(node)
+        if dimension is not None or isinstance(llvm_type, ir.ArrayType):
+            return ptr, ir.PointerType(llvm_type)
+        return self.builder.load(ptr), llvm_type
 
     def visit_BinaryOpNode(self, node):
         op = node.op
-        
-        # Tratamento de Curto-Circuito
+
+        # `&&` e `||` têm avaliação de curto-circuito: o lado direito só pode
+        # ser avaliado condicionalmente, então precisam de blocos e `phi`
+        # próprios em vez de simplesmente calcular os dois lados e combinar.
         if op == '&&':
             return self._generate_short_circuit_and(node)
         elif op == '||':
             return self._generate_short_circuit_or(node)
-            
+
         l_val, l_type = self.visit(node.left)
         r_val, r_type = self.visit(node.right)
-        
-        # Coerção de int para real em expressões aritméticas/relacionais
-        if l_type == 'double' and r_type == 'i32':
-            reg = self.new_reg()
-            self.emit(f"{reg} = sitofp i32 {r_val} to double")
-            r_val, r_type = reg, 'double'
-        elif l_type == 'i32' and r_type == 'double':
-            reg = self.new_reg()
-            self.emit(f"{reg} = sitofp i32 {l_val} to double")
-            l_val, l_type = reg, 'double'
-            
-        # Concatenação de string com coercão implícita
-        if op == '+' and (l_type == 'i8*' or r_type == 'i8*'):
-            # Converter operando esquerdo se não for string
-            if l_type != 'i8*':
+
+        # Coerção implícita int -> real quando os dois lados não combinam
+        if l_type == f64 and r_type == i32:
+            r_val, r_type = self.builder.sitofp(r_val, f64), f64
+        elif l_type == i32 and r_type == f64:
+            l_val, l_type = self.builder.sitofp(l_val, f64), f64
+
+        # Concatenação de string: `+` onde pelo menos um dos lados é `str`
+        if op == '+' and (l_type == i8p or r_type == i8p):
+            if l_type != i8p:
                 l_val, l_type = self._cast_value_to_string(l_val, l_type)
-            # Converter operando direito se não for string
-            if r_type != 'i8*':
+            if r_type != i8p:
                 r_val, r_type = self._cast_value_to_string(r_val, r_type)
-                
-            reg = self.new_reg()
-            self.emit(f"{reg} = call i8* @str_concat(i8* {l_val}, i8* {r_val})")
-            return reg, 'i8*'
+            return self.builder.call(self.runtime['str_concat'], [l_val, r_val]), i8p
 
-        # Operações Aritméticas
-        if l_type == 'double':
-            if op == '+':
-                reg = self.new_reg()
-                self.emit(f"{reg} = fadd double {l_val}, {r_val}")
-                return reg, 'double'
-            elif op == '-':
-                reg = self.new_reg()
-                self.emit(f"{reg} = fsub double {l_val}, {r_val}")
-                return reg, 'double'
-            elif op == '*':
-                reg = self.new_reg()
-                self.emit(f"{reg} = fmul double {l_val}, {r_val}")
-                return reg, 'double'
-            elif op == '/':
-                reg = self.new_reg()
-                self.emit(f"{reg} = fdiv double {l_val}, {r_val}")
-                return reg, 'double'
-        elif l_type == 'i32':
-            if op == '+':
-                reg = self.new_reg()
-                self.emit(f"{reg} = add i32 {l_val}, {r_val}")
-                return reg, 'i32'
-            elif op == '-':
-                reg = self.new_reg()
-                self.emit(f"{reg} = sub i32 {l_val}, {r_val}")
-                return reg, 'i32'
-            elif op == '*':
-                reg = self.new_reg()
-                self.emit(f"{reg} = mul i32 {l_val}, {r_val}")
-                return reg, 'i32'
-            elif op == '/':
-                reg = self.new_reg()
-                self.emit(f"{reg} = sdiv i32 {l_val}, {r_val}")
-                return reg, 'i32'
-            elif op == '%':
-                reg = self.new_reg()
-                self.emit(f"{reg} = srem i32 {l_val}, {r_val}")
-                return reg, 'i32'
-            elif op == '**':
-                reg = self.new_reg()
-                self.emit(f"{reg} = call i32 @ipow(i32 {l_val}, i32 {r_val})")
-                return reg, 'i32'
+        # Operações aritméticas
+        if l_type == f64:
+            arith = {'+': self.builder.fadd, '-': self.builder.fsub,
+                     '*': self.builder.fmul, '/': self.builder.fdiv}
+            if op in arith:
+                return arith[op](l_val, r_val), f64
+        elif l_type == i32:
+            if op == '**':
+                return self.builder.call(self.runtime['ipow'], [l_val, r_val]), i32
+            arith = {'+': self.builder.add, '-': self.builder.sub, '*': self.builder.mul,
+                     '/': self.builder.sdiv, '%': self.builder.srem}
+            if op in arith:
+                return arith[op](l_val, r_val), i32
 
-        # Comparações Relacionais
-        if l_type == 'double':
-            llvm_op = {
-                '==': 'oeq', '!=': 'one',
-                '>': 'ogt', '>=': 'oge',
-                '<': 'olt', '<=': 'ole'
-            }[op]
-            reg = self.new_reg()
-            self.emit(f"{reg} = fcmp {llvm_op} double {l_val}, {r_val}")
-            return reg, 'i1'
-        elif l_type in ('i32', 'i1'):
-            # Permite comparar i32 ou booleano i1
-            llvm_op = {
-                '==': 'eq', '!=': 'ne',
-                '>': 'sgt', '>=': 'sge',
-                '<': 'slt', '<=': 'sle'
-            }[op]
-            reg = self.new_reg()
-            self.emit(f"{reg} = icmp {llvm_op} {l_type} {l_val}, {r_val}")
-            return reg, 'i1'
-        elif l_type.endswith('*') or r_type.endswith('*') or l_type == 'i8*' or r_type == 'i8*':
-            # Comparação de ponteiros (objetos, arrays, strings)
-            llvm_op = {'==': 'eq', '!=': 'ne'}[op]
-            reg = self.new_reg()
-            
-            # Fazer bitcast de ambos para i8* para garantir comparação de ponteiros uniforme no LLVM
-            l_ptr_val = l_val
-            if l_type != 'i8*':
-                reg_l = self.new_reg()
-                self.emit(f"{reg_l} = bitcast {l_type} {l_val} to i8*")
-                l_ptr_val = reg_l
-                
-            r_ptr_val = r_val
-            if r_type != 'i8*':
-                reg_r = self.new_reg()
-                self.emit(f"{reg_r} = bitcast {r_type} {r_val} to i8*")
-                r_ptr_val = reg_r
-                
-            self.emit(f"{reg} = icmp {llvm_op} i8* {l_ptr_val}, {r_ptr_val}")
-            return reg, 'i1'
+        # Comparações relacionais. Os operadores do JSS ('==', '<', '>=', ...)
+        # já são exatamente os símbolos que `icmp_signed`/`fcmp_ordered` esperam,
+        # então não precisamos de nenhuma tabela de tradução para mnemônicos LLVM.
+        if l_type == f64:
+            return self.builder.fcmp_ordered(op, l_val, r_val), i1
+        elif l_type in (i32, i1):
+            return self.builder.icmp_signed(op, l_val, r_val), i1
+        elif isinstance(l_type, ir.PointerType) or isinstance(r_type, ir.PointerType):
+            # Comparação de ponteiros (objetos, vetores por referência, strings):
+            # normalizamos os dois lados para i8* antes de comparar, já que o
+            # LLVM não permite `icmp` entre dois tipos de ponteiro diferentes.
+            l_ptr = l_val if l_type == i8p else self.builder.bitcast(l_val, i8p)
+            r_ptr = r_val if r_type == i8p else self.builder.bitcast(r_val, i8p)
+            return self.builder.icmp_unsigned(op, l_ptr, r_ptr), i1
 
-        return "0", "void"
+        return ir.Constant(i32, 0), void
 
     def _cast_value_to_string(self, val, from_type):
-        reg = self.new_reg()
-        if from_type == 'i32':
-            self.emit(f"{reg} = call i8* @int_to_str(i32 {val})")
-            return reg, 'i8*'
-        elif from_type == 'double':
-            self.emit(f"{reg} = call i8* @real_to_str(double {val})")
-            return reg, 'i8*'
-        elif from_type == 'i1':
-            self.emit(f"{reg} = call i8* @bool_to_str(i1 {val})")
-            return reg, 'i8*'
+        if from_type == i32:
+            return self.builder.call(self.runtime['int_to_str'], [val]), i8p
+        elif from_type == f64:
+            return self.builder.call(self.runtime['real_to_str'], [val]), i8p
+        elif from_type == i1:
+            return self.builder.call(self.runtime['bool_to_str'], [val]), i8p
         return val, from_type
 
     def _generate_short_circuit_and(self, node):
+        """`esquerda && direita`: só avalia `direita` se `esquerda` for verdadeira.
+
+        Gera três blocos: o bloco atual (que decide se pula ou não para a
+        direita), um bloco `and.rhs` que avalia e só é alcançado quando
+        `esquerda` é verdadeira, e um bloco `and.end` onde um `phi` junta o
+        resultado - `false` se viemos direto do bloco atual, ou o valor de
+        `direita` se passamos por `and.rhs`.
+        """
         l_val, _ = self.visit(node.left)
-        
-        rhs_label = self.new_label("and.rhs")
-        end_label = self.new_label("and.end")
-        
-        entry_block = self.get_current_block_name()
-        
-        self.emit(f"br i1 {l_val}, label %{rhs_label}, label %{end_label}")
-        
-        # Bloco da direita
-        self.block_terminated = False
-        self.emit(f"\n{rhs_label}:")
+        entry_block = self.builder.block
+
+        rhs_block = self.current_function.append_basic_block("and.rhs")
+        end_block = self.current_function.append_basic_block("and.end")
+        self.builder.cbranch(l_val, rhs_block, end_block)
+
+        self.builder = ir.IRBuilder(rhs_block)
         r_val, _ = self.visit(node.right)
-        rhs_final_block = self.get_current_block_name()
-        self.emit(f"br label %{end_label}")
-        
-        # Bloco final
-        self.block_terminated = False
-        self.emit(f"\n{end_label}:")
-        reg = self.new_reg()
-        self.emit(f"{reg} = phi i1 [ false, %{entry_block} ], [ {r_val}, %{rhs_final_block} ]")
-        return reg, 'i1'
+        rhs_final_block = self.builder.block
+        self.builder.branch(end_block)
+
+        self.builder = ir.IRBuilder(end_block)
+        phi = self.builder.phi(i1, name="and.result")
+        phi.add_incoming(ir.Constant(i1, 0), entry_block)
+        phi.add_incoming(r_val, rhs_final_block)
+        return phi, i1
 
     def _generate_short_circuit_or(self, node):
+        """`esquerda || direita`: só avalia `direita` se `esquerda` for falsa (espelho de `_generate_short_circuit_and`)."""
         l_val, _ = self.visit(node.left)
-        
-        rhs_label = self.new_label("or.rhs")
-        end_label = self.new_label("or.end")
-        
-        entry_block = self.get_current_block_name()
-        
-        self.emit(f"br i1 {l_val}, label %{end_label}, label %{rhs_label}")
-        
-        # Bloco da direita
-        self.block_terminated = False
-        self.emit(f"\n{rhs_label}:")
-        r_val, _ = self.visit(node.right)
-        rhs_final_block = self.get_current_block_name()
-        self.emit(f"br label %{end_label}")
-        
-        # Bloco final
-        self.block_terminated = False
-        self.emit(f"\n{end_label}:")
-        reg = self.new_reg()
-        self.emit(f"{reg} = phi i1 [ true, %{entry_block} ], [ {r_val}, %{rhs_final_block} ]")
-        return reg, 'i1'
+        entry_block = self.builder.block
 
-    def get_current_block_name(self):
-        # Percorre o buffer atual de trás para frente para achar a última etiqueta (label) de bloco
-        for line in reversed(self.current_buffer):
-            line_s = line.strip()
-            if line_s.endswith(":") and not line_s.startswith(";"):
-                return line_s[:-1]
-        return "entry"
+        rhs_block = self.current_function.append_basic_block("or.rhs")
+        end_block = self.current_function.append_basic_block("or.end")
+        self.builder.cbranch(l_val, end_block, rhs_block)
+
+        self.builder = ir.IRBuilder(rhs_block)
+        r_val, _ = self.visit(node.right)
+        rhs_final_block = self.builder.block
+        self.builder.branch(end_block)
+
+        self.builder = ir.IRBuilder(end_block)
+        phi = self.builder.phi(i1, name="or.result")
+        phi.add_incoming(ir.Constant(i1, 1), entry_block)
+        phi.add_incoming(r_val, rhs_final_block)
+        return phi, i1
 
     def visit_UnaryOpNode(self, node):
         op = node.op
-        
+
         if op in ('++', '--'):
-            # Incremento/Decremento prefixado (L-Value)
+            # Incremento/decremento prefixado: um alvo atribuível (L-value)
             ptr, llvm_type, _, _ = self.get_target_pointer(node.expression)
-            
-            # Carregar o valor atual
-            reg_old = self.new_reg()
-            self.emit(f"{reg_old} = load {llvm_type}, {llvm_type}* {ptr}")
-            
-            # Calcular novo valor
-            reg_new = self.new_reg()
-            if llvm_type == 'i32':
-                inc_val = "1"
-                self.emit(f"{reg_new} = add i32 {reg_old}, {inc_val}" if op == '++' else f"{reg_new} = sub i32 {reg_old}, {inc_val}")
-            else: # double
-                inc_val = "1.000000e+00"
-                self.emit(f"{reg_new} = fadd double {reg_old}, {inc_val}" if op == '++' else f"{reg_new} = fsub double {reg_old}, {inc_val}")
-                
-            # Salvar de volta
-            self.emit(f"store {llvm_type} {reg_new}, {llvm_type}* {ptr}")
-            return reg_new, llvm_type
-            
+            old_val = self.builder.load(ptr)
+            if llvm_type == i32:
+                step = ir.Constant(i32, 1)
+                new_val = self.builder.add(old_val, step) if op == '++' else self.builder.sub(old_val, step)
+            else:  # real (double)
+                step = ir.Constant(f64, 1.0)
+                new_val = self.builder.fadd(old_val, step) if op == '++' else self.builder.fsub(old_val, step)
+            self.builder.store(new_val, ptr)
+            return new_val, llvm_type
+
         val, v_type = self.visit(node.expression)
-        
+
         if op == '!':
-            reg = self.new_reg()
-            self.emit(f"{reg} = xor i1 {val}, true")
-            return reg, 'i1'
+            return self.builder.xor(val, ir.Constant(i1, 1)), i1
         elif op == '+':
             return val, v_type
         elif op == '-':
-            reg = self.new_reg()
-            if v_type == 'double':
-                self.emit(f"{reg} = fneg double {val}")
-            else:
-                self.emit(f"{reg} = sub i32 0, {val}")
-            return reg, v_type
-            
-        return "0", "void"
+            if v_type == f64:
+                return self.builder.fneg(val), v_type
+            return self.builder.sub(ir.Constant(i32, 0), val), v_type
+
+        return ir.Constant(i32, 0), void
 
     def visit_CastNode(self, node):
         val, from_type = self.visit(node.expression)
         target = node.target_type
-        
+
         if target == 'int':
-            if from_type == 'double':
-                reg = self.new_reg()
-                self.emit(f"{reg} = fptosi double {val} to i32")
-                return reg, 'i32'
-            elif from_type == 'i1':
-                reg = self.new_reg()
-                self.emit(f"{reg} = zext i1 {val} to i32")
-                return reg, 'i32'
-            return val, 'i32'
-            
+            if from_type == f64:
+                return self.builder.fptosi(val, i32), i32
+            elif from_type == i1:
+                return self.builder.zext(val, i32), i32
+            return val, i32
+
         elif target == 'real':
-            if from_type == 'i32':
-                reg = self.new_reg()
-                self.emit(f"{reg} = sitofp i32 {val} to double")
-                return reg, 'double'
-            elif from_type == 'i1':
-                reg = self.new_reg()
-                self.emit(f"{reg} = uitofp i1 {val} to double")
-                return reg, 'double'
-            return val, 'double'
-            
+            if from_type == i32:
+                return self.builder.sitofp(val, f64), f64
+            elif from_type == i1:
+                return self.builder.uitofp(val, f64), f64
+            return val, f64
+
         elif target == 'bool':
-            if from_type == 'i32':
-                reg = self.new_reg()
-                self.emit(f"{reg} = icmp ne i32 {val}, 0")
-                return reg, 'i1'
-            elif from_type == 'double':
-                reg = self.new_reg()
-                self.emit(f"{reg} = fcmp one double {val}, 0.0")
-                return reg, 'i1'
-            return val, 'i1'
-            
+            if from_type == i32:
+                return self.builder.icmp_signed('!=', val, ir.Constant(i32, 0)), i1
+            elif from_type == f64:
+                return self.builder.fcmp_ordered('!=', val, ir.Constant(f64, 0.0)), i1
+            return val, i1
+
         elif target == 'str':
-            val_str, _ = self._cast_value_to_string(val, from_type)
-            return val_str, 'i8*'
-            
-        return "0", "void"
+            return self._cast_value_to_string(val, from_type)
+
+        return ir.Constant(i32, 0), void
 
     def visit_NewObjectNode(self, node):
         class_name = node.class_name
-        class_info = self.classes[class_name]
-        
-        # Calcular o tamanho em bytes do struct da classe no LLVM de forma dinâmica e portável
-        size_reg = self.new_reg()
-        self.emit(f"{size_reg} = ptrtoint %struct.{class_name}* getelementptr (%struct.{class_name}, %struct.{class_name}* null, i32 1) to i64")
-        
-        # Chamar malloc
-        malloc_reg = self.new_reg()
-        self.emit(f"{malloc_reg} = call i8* @malloc(i64 {size_reg})")
-        
-        # Fazer cast de i8* para o ponteiro do struct
-        cast_reg = self.new_reg()
-        self.emit(f"{cast_reg} = bitcast i8* {malloc_reg} to %struct.{class_name}*")
-        
-        # Chamar o construtor da classe
-        arg_list = []
-        # O construtor recebe 'this' como primeiro argumento
-        arg_list.append(f"%struct.{class_name}* {cast_reg}")
-        
-        for arg_node in node.arguments:
-            a_val, a_type = self.visit(arg_node)
-            arg_list.append(f"{a_type} {a_val}")
-            
-        args_str = ", ".join(arg_list)
-        self.emit(f"call void @{class_name}_constructor({args_str})")
-        
-        # Retorna o ponteiro do objeto recém-criado
-        return cast_reg, f"%struct.{class_name}*"
+        struct_ty = self.classes[class_name]['struct_type']
+        struct_ptr_ty = ir.PointerType(struct_ty)
+
+        # Tamanho (em bytes) de um `struct.ClassName`, calculado em tempo de
+        # compilação: "até onde apontaria um struct.ClassName* que começasse em
+        # NULL e avançasse 1 posição" é, por definição, o tamanho de 1 struct -
+        # já considerando o padding/alinhamento que o LLVM aplicar aos campos.
+        size_const = ir.Constant(struct_ptr_ty, None).gep([ir.Constant(i32, 1)]).ptrtoint(i64)
+
+        raw_mem = self.builder.call(self.runtime['malloc'], [size_const])
+        obj_ptr = self.builder.bitcast(raw_mem, struct_ptr_ty)
+
+        constructor_fn = self.classes[class_name]['constructor']
+        if constructor_fn is not None:
+            args = self._prepare_call_args(constructor_fn, node.arguments, leading_args=[obj_ptr])
+            self.builder.call(constructor_fn, args)
+
+        return obj_ptr, struct_ptr_ty
+
+    def _prepare_call_args(self, callee_fn, arg_nodes, leading_args=None):
+        """Avalia os argumentos de uma chamada e ajusta cada um ao tipo exato
+        esperado pelo parâmetro formal correspondente (a assinatura real de
+        `callee_fn`, já conhecida porque toda função/método foi pré-declarada
+        em `_preprocess_declarations`). Dois ajustes são necessários:
+        - `int` passado onde se espera `real` precisa de conversão (`sitofp`);
+        - `null` passado onde se espera uma referência de objeto precisa virar
+          um ponteiro nulo *do tipo certo* (o literal `null` do JSS sempre nasce
+          com tipo genérico i8*, mas cada classe tem seu próprio tipo de ponteiro).
+        """
+        args = list(leading_args) if leading_args else []
+        param_types = callee_fn.function_type.args
+        offset = len(args)
+        for i, arg_node in enumerate(arg_nodes):
+            val, v_type = self.visit(arg_node)
+            expected = param_types[offset + i]
+            if expected == f64 and v_type == i32:
+                val = self.builder.sitofp(val, f64)
+            elif isinstance(expected, ir.PointerType) and v_type != expected:
+                val = ir.Constant(expected, None)
+            args.append(val)
+        return args
 
     def visit_CallNode(self, node):
         if isinstance(node.callee, AttributeAccessNode):
             # Chamada de método: obj.metodo(args)
-            obj_reg, obj_type = self.visit(node.callee.object_expr)
-            class_name = obj_type[8:-1] # Extrai nome da classe
+            obj_ptr, obj_type = self.visit(node.callee.object_expr)
+            class_name = obj_type.pointee.name.split(".", 1)[1]
             method_name = node.callee.attribute_name
-            
-            # Carregar a assinatura
-            class_info = self.classes[class_name]
-            # O LLVM mapeia métodos como @NomeClasse_NomeMetodo
-            llvm_func_name = f"@{class_name}_{method_name}"
-            
-            # Precisamos do tipo de retorno do método
-            # Como a AST não anota tipos nos nós de forma persistente, 
-            # podemos procurar a declaração do método correspondente na AST ou no mapeamento
-            # JSS simplificado: vamos obter os tipos de argumentos e retorno
-            # Buscando a assinatura no preprocessador
-            ret_jss = "void"
-            ret_dim = None
-            
-            # Procurar classe na AST global ou salvar na tabela
-            # Vamos assumir i32 por default se não acharmos (mas quase sempre acharemos em classes preprocessadas)
-            # Para métodos, vamos buscar o tipo do método real:
-            # Vamos descobrir o método correto nos métodos preprocessados da classe
-            method_llvm_ret = "void"
-            
-            # Vamos buscar se o método retorna algo
-            # Faremos busca simples na nossa tabela global de métodos da classe
-            # Como JSS é simples, podemos descobrir dinamicamente baseado nas assinaturas
-            # Para fins de simplificação: se retornar void é void, se não é o tipo correspondente.
-            # Vamos registrar a assinatura do método também no preprocessamento.
-            # (Adicionado no _preprocess_declarations mais tarde)
-            sig_key = f"{class_name}_{method_name}"
-            if sig_key in self.functions_sig:
-                r_jss, r_dim, _ = self.functions_sig[sig_key]
-                method_llvm_ret = self.get_llvm_type(r_jss, r_dim)
-            else:
-                method_llvm_ret = "i32" # Fallback seguro
-                
-            arg_list = []
-            arg_list.append(f"%struct.{class_name}* {obj_reg}") # implicit 'this'
-            
-            for arg_node in node.arguments:
-                a_val, a_type = self.visit(arg_node)
-                arg_list.append(f"{a_type} {a_val}")
-                
-            args_str = ", ".join(arg_list)
-            
-            if method_llvm_ret == 'void':
-                self.emit(f"call void {llvm_func_name}({args_str})")
-                return "0", "void"
-            else:
-                reg = self.new_reg()
-                self.emit(f"{reg} = call {method_llvm_ret} {llvm_func_name}({args_str})")
-                return reg, method_llvm_ret
-                
+            fn = self.classes[class_name]['methods'][method_name]
         else:
             # Chamada de função global: foo(args)
-            func_name = node.callee.name
-            llvm_func_name = f"@{func_name}"
-            if func_name == 'main':
-                llvm_func_name = "@_jss_main"
-                
-            r_jss, r_dim, _ = self.functions_sig[func_name]
-            ret_llvm_type = self.get_llvm_type(r_jss, r_dim)
-            
-            arg_list = []
-            for arg_node in node.arguments:
-                a_val, a_type = self.visit(arg_node)
-                arg_list.append(f"{a_type} {a_val}")
-            args_str = ", ".join(arg_list)
-            
-            if ret_llvm_type == 'void':
-                self.emit(f"call void {llvm_func_name}({args_str})")
-                return "0", "void"
-            else:
-                reg = self.new_reg()
-                self.emit(f"{reg} = call {ret_llvm_type} {llvm_func_name}({args_str})")
-                return reg, ret_llvm_type
+            fn = self.user_functions[node.callee.name]
+
+        leading = [obj_ptr] if isinstance(node.callee, AttributeAccessNode) else None
+        args = self._prepare_call_args(fn, node.arguments, leading_args=leading)
+        result = self.builder.call(fn, args)
+
+        if fn.function_type.return_type == void:
+            # Uma chamada void usada como expressão (ex.: dentro de outra
+            # expressão) não tem valor real; devolvemos um 0 inofensivo.
+            return ir.Constant(i32, 0), void
+        return result, fn.function_type.return_type
 
     def visit_ArrayLiteralNode(self, node):
-        # Literais de vetores no JSS são usados apenas em inicializações.
-        # Retornamos uma lista de seus valores avaliados
-        evaluated = []
-        for expr in node.expressions:
-            val, v_type = self.visit(expr)
-            evaluated.append((val, v_type))
-        return evaluated, "literal_array"
+        # Literais de vetor só aparecem em inicializações; devolvemos a lista de
+        # valores avaliados para quem estiver processando a declaração/atribuição.
+        return [self.visit(expr) for expr in node.expressions], "literal_array"
 
-    # --- VISITORES DE DECLARAÇÃO E CONTROLE DE FLUXO ---
+    # ------------------------------------------------------------------
+    # Visitantes de declaração e controle de fluxo
+    # ------------------------------------------------------------------
 
     def visit_VarDeclarationNode(self, node):
         var_type = node.var_type
         dimension = node.dimension
         llvm_type = self.get_llvm_type(var_type, dimension)
-        
-        if self.current_buffer == self.main_code and self.current_scope.parent is None:
-            # Variável Global
-            llvm_name = f"@g_{node.name}"
-            default_init = self.get_default_value(llvm_type)
-            self.global_decls.append(f"{llvm_name} = global {llvm_type} {default_init}")
-            self.current_scope.define(node.name, llvm_name, llvm_type, var_type, dimension)
-            
-            # Se houver valor inicializador, executá-lo no entrypoint principal
-            if node.value:
-                if isinstance(node.value, ArrayLiteralNode):
-                    # Inicialização de vetor global
-                    evaluated, _ = self.visit(node.value)
-                    for idx, (elem_val, elem_type) in enumerate(evaluated):
-                        reg_ptr = self.new_reg()
-                        self.emit(f"{reg_ptr} = getelementptr {llvm_type}, {llvm_type}* {llvm_name}, i32 0, i32 {idx}")
-                        self.emit(f"store {elem_type} {elem_val}, {elem_type}* {reg_ptr}")
-                else:
-                    val, v_type = self.visit(node.value)
-                    if llvm_type == 'double' and v_type == 'i32':
-                        reg = self.new_reg()
-                        self.emit(f"{reg} = sitofp i32 {val} to double")
-                        val = reg
-                    self.emit(f"store {llvm_type} {val}, {llvm_type}* {llvm_name}")
-            else:
-                # Inicialização padrão para vetores globais não inicializados
-                if dimension is not None:
-                    self._initialize_array_with_defaults(llvm_name, llvm_type, var_type, dimension)
-        else:
-            # Variável Local
-            self.var_count += 1
-            llvm_name = f"%{node.name}.addr.{self.var_count}"
-            self.emit(f"{llvm_name} = alloca {llvm_type}")
-            self.current_scope.define(node.name, llvm_name, llvm_type, var_type, dimension)
-            
-            # Inicializar com valores padrões do tipo
-            default_val = self.get_default_value(llvm_type)
-            if default_val != 'zeroinitializer':
-                self.emit(f"store {llvm_type} {default_val}, {llvm_type}* {llvm_name}")
-                
-            if node.value:
-                if isinstance(node.value, ArrayLiteralNode):
-                    evaluated, _ = self.visit(node.value)
-                    for idx, (elem_val, elem_type) in enumerate(evaluated):
-                        reg_ptr = self.new_reg()
-                        self.emit(f"{reg_ptr} = getelementptr {llvm_type}, {llvm_type}* {llvm_name}, i32 0, i32 {idx}")
-                        self.emit(f"store {elem_type} {elem_val}, {elem_type}* {reg_ptr}")
-                else:
-                    val, v_type = self.visit(node.value)
-                    if llvm_type == 'double' and v_type == 'i32':
-                        reg = self.new_reg()
-                        self.emit(f"{reg} = sitofp i32 {val} to double")
-                        val = reg
-                    self.emit(f"store {llvm_type} {val}, {llvm_type}* {llvm_name}")
-            else:
-                if dimension is not None:
-                    self._initialize_array_with_defaults(llvm_name, llvm_type, var_type, dimension)
 
-    def _initialize_array_with_defaults(self, array_ptr, array_llvm_type, elem_jss_type, dimension):
-        # Inicializa um vetor estático recursivamente com zeros/nulos padrões
-        elem_llvm_type = self.get_llvm_type(elem_jss_type)
-        default_val = self.get_default_value(elem_llvm_type)
-        
-        # Achatar dimensões
-        if isinstance(dimension, list):
-            dims = dimension
+        if self.current_scope.parent is None:
+            # Variável global: vive na seção de dados do executável, não na pilha.
+            # O `initializer` já cuida de zerar (int 0, real 0.0, vetor inteiro
+            # zerado, ponteiro nulo, ...) mesmo sem nenhuma instrução em tempo de
+            # execução - é por isso que não existe mais um laço manual "zerar
+            # cada posição do vetor" como método separado.
+            gv = ir.GlobalVariable(self.module, llvm_type, name=f"g_{node.name}")
+            gv.initializer = self.get_default_value(llvm_type)
+            self.current_scope.define(node.name, gv, llvm_type, var_type, dimension)
+            target_ptr = gv
         else:
-            dims = [dimension]
-            
-        total_elements = 1
-        for d in dims:
-            total_elements *= d
-            
-        # Fazer bitcast do ponteiro do array para o ponteiro do elemento base
-        flat_ptr = self.new_reg()
-        self.emit(f"{flat_ptr} = bitcast {array_llvm_type}* {array_ptr} to {elem_llvm_type}*")
-        
-        # Inicializar linearmente
-        for idx in range(total_elements):
-            reg_ptr = self.new_reg()
-            self.emit(f"{reg_ptr} = getelementptr {elem_llvm_type}, {elem_llvm_type}* {flat_ptr}, i32 {idx}")
-            self.emit(f"store {elem_llvm_type} {default_val}, {elem_llvm_type}* {reg_ptr}")
+            # Variável local: alocada na pilha da função atual.
+            target_ptr = self.builder.alloca(llvm_type, name=f"{node.name}.addr")
+            self.current_scope.define(node.name, target_ptr, llvm_type, var_type, dimension)
+            if not node.value:
+                # Diferente de uma global, `alloca` não zera a memória sozinho -
+                # por isso, sem inicializador explícito, gravamos o valor padrão
+                # manualmente (um único `store`, mesmo para vetores inteiros).
+                self.builder.store(self.get_default_value(llvm_type), target_ptr)
+
+        if node.value:
+            if isinstance(node.value, ArrayLiteralNode):
+                evaluated, _ = self.visit(node.value)
+                for idx, (elem_val, _) in enumerate(evaluated):
+                    ptr = self.builder.gep(target_ptr, [_zero32(), ir.Constant(i32, idx)], inbounds=True)
+                    self.builder.store(elem_val, ptr)
+            else:
+                val, v_type = self.visit(node.value)
+                if llvm_type == f64 and v_type == i32:
+                    val = self.builder.sitofp(val, f64)
+                self.builder.store(val, target_ptr)
 
     def visit_AssignmentNode(self, node):
         op = node.op
-        
-        # Caso de curto-circuito em atribuições compostas &&= e ||=
+
         if op in ('&&=', '||='):
-            # x &&= y  ===>  x = x && y
-            ptr, llvm_type, jss_type, dimension = self.get_target_pointer(node.target)
-            
-            # Carregar o valor atual (lado esquerdo)
-            reg_old = self.new_reg()
-            self.emit(f"{reg_old} = load {llvm_type}, {llvm_type}* {ptr}")
-            
-            # Realizar a lógica de curto circuito correspondente
-            rhs_label = self.new_label("assign.rhs")
-            end_label = self.new_label("assign.end")
-            entry_block = self.get_current_block_name()
-            
+            # `x &&= y` equivale a `x = x && y` (idem para `||=`): mesmo padrão de
+            # curto-circuito com blocos e `phi` de `_generate_short_circuit_and/or`,
+            # só que o resultado também é gravado de volta no alvo.
+            ptr, llvm_type, _, _ = self.get_target_pointer(node.target)
+            old_val = self.builder.load(ptr)
+
+            entry_block = self.builder.block
+            rhs_block = self.current_function.append_basic_block("assign.rhs")
+            end_block = self.current_function.append_basic_block("assign.end")
+
             if op == '&&=':
-                self.emit(f"br i1 {reg_old}, label %{rhs_label}, label %{end_label}")
-            else: # ||=
-                self.emit(f"br i1 {reg_old}, label %{end_label}, label %{rhs_label}")
-                
-            # Avaliar o valor direito
-            self.emit(f"\n{rhs_label}:")
-            self.block_terminated = False
+                self.builder.cbranch(old_val, rhs_block, end_block)
+            else:
+                self.builder.cbranch(old_val, end_block, rhs_block)
+
+            self.builder = ir.IRBuilder(rhs_block)
             r_val, _ = self.visit(node.value)
-            rhs_final_block = self.get_current_block_name()
-            self.emit(f"br label %{end_label}")
-            
-            # Bloco de junção
-            self.emit(f"\n{end_label}:")
-            self.block_terminated = False
-            reg_phi = self.new_reg()
-            if op == '&&=':
-                self.emit(f"{reg_phi} = phi i1 [ false, %{entry_block} ], [ {r_val}, %{rhs_final_block} ]")
-            else: # ||=
-                self.emit(f"{reg_phi} = phi i1 [ true, %{entry_block} ], [ {r_val}, %{rhs_final_block} ]")
-                
-            # Salvar na variável
-            self.emit(f"store i1 {reg_phi}, i1* {ptr}")
-            return reg_phi, 'i1'
+            rhs_final_block = self.builder.block
+            self.builder.branch(end_block)
+
+            self.builder = ir.IRBuilder(end_block)
+            phi = self.builder.phi(i1, name="assign.result")
+            phi.add_incoming(ir.Constant(i1, 1 if op == '||=' else 0), entry_block)
+            phi.add_incoming(r_val, rhs_final_block)
+
+            self.builder.store(phi, ptr)
+            return phi, i1
 
         ptr, llvm_type, _, _ = self.get_target_pointer(node.target)
-        
+
         if op == '=':
             val, v_type = self.visit(node.value)
-            if llvm_type == 'double' and v_type == 'i32':
-                reg = self.new_reg()
-                self.emit(f"{reg} = sitofp i32 {val} to double")
-                val, v_type = reg, 'double'
-            elif llvm_type == 'i8*' and v_type != 'i8*':
-                # Objeto de classe atribuído como null
-                val = "null"
-            self.emit(f"store {llvm_type} {val}, {llvm_type}* {ptr}")
+            if llvm_type == f64 and v_type == i32:
+                val = self.builder.sitofp(val, f64)
+            elif isinstance(llvm_type, ir.PointerType) and v_type != llvm_type:
+                # Cobre `objeto = null;`: o literal `null` nasce com tipo i8*
+                # genérico, mas o alvo espera um ponteiro do tipo da classe certa.
+                val = ir.Constant(llvm_type, None)
+            self.builder.store(val, ptr)
             return val, llvm_type
+
+        # Atribuições compostas: +=, -=, *=, /=, %=
+        arith_op = op[:-1]
+        old_val = self.builder.load(ptr)
+        val_rhs, r_type = self.visit(node.value)
+        if llvm_type == f64 and r_type == i32:
+            val_rhs = self.builder.sitofp(val_rhs, f64)
+
+        if llvm_type == f64:
+            fn = {'+': self.builder.fadd, '-': self.builder.fsub,
+                  '*': self.builder.fmul, '/': self.builder.fdiv}[arith_op]
         else:
-            # Atribuições compostas: +=, -=, *=, /=, %=
-            arith_op = op[:-1] # Remove o '='
-            
-            # Carregar valor antigo
-            reg_old = self.new_reg()
-            self.emit(f"{reg_old} = load {llvm_type}, {llvm_type}* {ptr}")
-            
-            # Avaliar o novo termo
-            val_rhs, r_type = self.visit(node.value)
-            
-            # Coerção se necessário
-            if llvm_type == 'double' and r_type == 'i32':
-                reg = self.new_reg()
-                self.emit(f"{reg} = sitofp i32 {val_rhs} to double")
-                val_rhs = reg
-                
-            # Computar nova operação
-            reg_res = self.new_reg()
-            if llvm_type == 'double':
-                llvm_inst = {'+': 'fadd', '-': 'fsub', '*': 'fmul', '/': 'fdiv'}[arith_op]
-                self.emit(f"{reg_res} = {llvm_inst} double {reg_old}, {val_rhs}")
-            else: # i32
-                llvm_inst = {'+': 'add', '-': 'sub', '*': 'mul', '/': 'sdiv', '%': 'srem'}[arith_op]
-                self.emit(f"{reg_res} = {llvm_inst} i32 {reg_old}, {val_rhs}")
-                
-            # Salvar resultado
-            self.emit(f"store {llvm_type} {reg_res}, {llvm_type}* {ptr}")
-            return reg_res, llvm_type
+            fn = {'+': self.builder.add, '-': self.builder.sub, '*': self.builder.mul,
+                  '/': self.builder.sdiv, '%': self.builder.srem}[arith_op]
+
+        result = fn(old_val, val_rhs)
+        self.builder.store(result, ptr)
+        return result, llvm_type
 
     def visit_BlockNode(self, node):
         old_scope = self.current_scope
         self.current_scope = Scope(parent=old_scope)
         for stmt in node.statements:
             self.visit(stmt)
+            if self.builder.block.is_terminated:
+                # `return`/`break` já encerrou o bloco atual (ele agora termina
+                # com `ret`/`br`); qualquer instrução do JSS depois disso seria
+                # código morto e inserir mais instruções aqui produziria IR
+                # inválido (um bloco não pode ter nada depois do terminador).
+                break
         self.current_scope = old_scope
 
     def visit_IfNode(self, node):
         cond_val, _ = self.visit(node.condition)
-        
-        then_label = self.new_label("if.then")
-        else_label = self.new_label("if.else") if node.else_branch else None
-        merge_label = self.new_label("if.merge")
-        
-        if else_label:
-            self.emit(f"br i1 {cond_val}, label %{then_label}, label %{else_label}")
-        else:
-            self.emit(f"br i1 {cond_val}, label %{then_label}, label %{merge_label}")
-            
-        # Ramo Then
-        self.block_terminated = False
-        self.emit(f"\n{then_label}:")
+
+        then_block = self.current_function.append_basic_block("if.then")
+        else_block = self.current_function.append_basic_block("if.else") if node.else_branch else None
+        merge_block = self.current_function.append_basic_block("if.merge")
+
+        self.builder.cbranch(cond_val, then_block, else_block if else_block else merge_block)
+
+        self.builder = ir.IRBuilder(then_block)
         self.visit(node.then_branch)
-        if not self.block_terminated:
-            self.emit(f"br label %{merge_label}")
-            
-        # Ramo Else
-        if else_label:
-            self.block_terminated = False
-            self.emit(f"\n{else_label}:")
+        if not self.builder.block.is_terminated:
+            self.builder.branch(merge_block)
+
+        if else_block:
+            self.builder = ir.IRBuilder(else_block)
             self.visit(node.else_branch)
-            if not self.block_terminated:
-                self.emit(f"br label %{merge_label}")
-                
-        # Ramo Merge
-        self.block_terminated = False
-        self.emit(f"\n{merge_label}:")
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_block)
+
+        self.builder = ir.IRBuilder(merge_block)
 
     def visit_WhileNode(self, node):
-        cond_label = self.new_label("while.cond")
-        body_label = self.new_label("while.body")
-        end_label = self.new_label("while.end")
-        
-        self.emit(f"br label %{cond_label}")
-        
-        # Bloco de condição
-        self.block_terminated = False
-        self.emit(f"\n{cond_label}:")
+        cond_block = self.current_function.append_basic_block("while.cond")
+        body_block = self.current_function.append_basic_block("while.body")
+        end_block = self.current_function.append_basic_block("while.end")
+
+        self.builder.branch(cond_block)
+
+        self.builder = ir.IRBuilder(cond_block)
         cond_val, _ = self.visit(node.condition)
-        self.emit(f"br i1 {cond_val}, label %{body_label}, label %{end_label}")
-        
-        # Bloco de corpo
-        self.block_terminated = False
-        self.emit(f"\n{body_label}:")
-        self.loop_stack.append(end_label)
+        self.builder.cbranch(cond_val, body_block, end_block)
+
+        self.builder = ir.IRBuilder(body_block)
+        self.loop_stack.append(end_block)
         self.visit(node.body)
         self.loop_stack.pop()
-        if not self.block_terminated:
-            self.emit(f"br label %{cond_label}")
-            
-        # Bloco de fim
-        self.block_terminated = False
-        self.emit(f"\n{end_label}:")
+        if not self.builder.block.is_terminated:
+            self.builder.branch(cond_block)
+
+        self.builder = ir.IRBuilder(end_block)
 
     def visit_ForNode(self, node):
-        cond_label = self.new_label("for.cond")
-        body_label = self.new_label("for.body")
-        step_label = self.new_label("for.step")
-        end_label = self.new_label("for.end")
-        
+        cond_block = self.current_function.append_basic_block("for.cond")
+        body_block = self.current_function.append_basic_block("for.body")
+        step_block = self.current_function.append_basic_block("for.step")
+        end_block = self.current_function.append_basic_block("for.end")
+
         old_scope = self.current_scope
         self.current_scope = Scope(parent=old_scope)
-        
-        # Inicialização do loop
+
         if node.init:
             self.visit(node.init)
-            
-        self.emit(f"br label %{cond_label}")
-        
-        # Bloco de condição
-        self.block_terminated = False
-        self.emit(f"\n{cond_label}:")
+        self.builder.branch(cond_block)
+
+        self.builder = ir.IRBuilder(cond_block)
         if node.condition:
             cond_val, _ = self.visit(node.condition)
-            self.emit(f"br i1 {cond_val}, label %{body_label}, label %{end_label}")
+            self.builder.cbranch(cond_val, body_block, end_block)
         else:
-            self.emit(f"br label %{body_label}")
-            
-        # Bloco de corpo
-        self.block_terminated = False
-        self.emit(f"\n{body_label}:")
-        self.loop_stack.append(end_label)
+            self.builder.branch(body_block)
+
+        self.builder = ir.IRBuilder(body_block)
+        self.loop_stack.append(end_block)
         self.visit(node.body)
         self.loop_stack.pop()
-        if not self.block_terminated:
-            self.emit(f"br label %{step_label}")
-            
-        # Bloco de passo/incremento
-        self.block_terminated = False
-        self.emit(f"\n{step_label}:")
+        if not self.builder.block.is_terminated:
+            self.builder.branch(step_block)
+
+        self.builder = ir.IRBuilder(step_block)
         if node.update:
             self.visit(node.update)
-        self.emit(f"br label %{cond_label}")
-        
-        # Bloco de fim
-        self.block_terminated = False
-        self.emit(f"\n{end_label}:")
-        
+        self.builder.branch(cond_block)
+
+        self.builder = ir.IRBuilder(end_block)
         self.current_scope = old_scope
 
     def visit_BreakNode(self, node):
         if self.loop_stack:
-            target = self.loop_stack[-1]
-            self.emit(f"br label %{target}")
-            self.block_terminated = True
+            self.builder.branch(self.loop_stack[-1])
 
-    def visit_FunctionNode(self, node):
-        # Salvar o buffer principal e escopo para compilação local de função
-        old_buf = self.current_buffer
+    def _build_function_body(self, fn, jss_params, body, ret_llvm_type, this_class_name=None):
+        """Preenche o corpo de uma função/método/construtor já pré-declarado.
+
+        Compartilhada pelas três formas de "função" que o JSS tem (função
+        global, método e construtor) porque a receita é sempre a mesma: abrir
+        um escopo novo, alocar uma cópia local de cada parâmetro (e do `this`
+        implícito, quando existe), compilar o corpo e, no final, garantir que
+        o último bloco termine com um `ret`/`unreachable` válido.
+        """
+        old_builder = self.builder
         old_scope = self.current_scope
-        old_terminated = self.block_terminated
-        old_reg_count = self.reg_count
-        old_label_count = self.label_count
-        
-        self.current_buffer = []
+        old_function = self.current_function
+        old_ret_type = self.current_function_ret_type
+
+        self.current_function = fn
         self.current_scope = Scope(parent=old_scope)
-        self.reg_count = 0
-        self.label_count = 0
-        self.block_terminated = False
-        
-        func_name = node.name
-        llvm_func_name = f"@{func_name}"
-        if func_name == 'main':
-            llvm_func_name = "@_jss_main"
-            
-        ret_type = self.get_llvm_type(node.return_type, node.return_dimension)
-        self.current_function_ret_type = ret_type
-        
-        # Gerar parâmetros do LLVM
-        params_llvm = []
-        params_allocations = []
-        for p in node.params:
+        self.current_function_ret_type = ret_llvm_type
+        self.builder = ir.IRBuilder(fn.append_basic_block("entry"))
+
+        arg_index = 0
+        if this_class_name is not None:
+            this_arg = fn.args[0]
+            this_arg.name = "this"
+            this_addr = self.builder.alloca(this_arg.type, name="this.addr")
+            self.builder.store(this_arg, this_addr)
+            self.current_scope.define("this", this_addr, this_arg.type, this_class_name, None)
+            arg_index = 1
+
+        for p, arg in zip(jss_params, fn.args[arg_index:]):
             p_type, p_name = p[0], p[1]
             p_dim = p[2] if len(p) > 2 else None
-            
-            p_llvm_type = self.get_llvm_type(p_type, p_dim)
-            if p_dim is not None:
-                # Vetores são passados por referência
-                p_llvm_type += "*"
-                
-            reg_in = f"%_in_{p_name}"
-            params_llvm.append(f"{p_llvm_type} {reg_in}")
-            params_allocations.append((p_name, reg_in, p_llvm_type, p_type, p_dim))
-            
-        params_str = ", ".join(params_llvm)
-        
-        self.emit(f"define {ret_type} {llvm_func_name}({params_str}) {{")
-        self.emit("entry:")
-        
-        # Alocar espaço local para cada parâmetro e copiar valor de entrada
-        for name, reg_in, llvm_type, jss_type, dimension in params_allocations:
-            self.var_count += 1
-            addr_name = f"%{name}.addr.{self.var_count}"
-            self.emit(f"{addr_name} = alloca {llvm_type}")
-            self.emit(f"store {llvm_type} {reg_in}, {llvm_type}* {addr_name}")
-            self.current_scope.define(name, addr_name, llvm_type, jss_type, dimension)
-            
-        # Compilar o corpo da função
-        self.visit(node.body)
-        
-        # Garante retorno caso seja uma função void sem comando return explícito
-        if ret_type == 'void' and not self.block_terminated:
-            self.emit("ret void")
-            
-        # Se o último item no buffer for um label, insere unreachable para evitar blocos vazios
-        if self.current_buffer and self.current_buffer[-1].strip().endswith(":"):
-            self.block_terminated = False
-            self.emit("unreachable")
-            
-        self.current_buffer.append("}")
-        
-        # Salva o código gerado no buffer de funções globais
-        self.func_decls.extend(self.current_buffer)
-        
-        # Restaurar estado
-        self.current_buffer = old_buf
+            arg.name = f"_in_{p_name}"
+            addr = self.builder.alloca(arg.type, name=f"{p_name}.addr")
+            self.builder.store(arg, addr)
+            self.current_scope.define(p_name, addr, arg.type, p_type, p_dim)
+
+        self.visit(body)
+
+        if not self.builder.block.is_terminated:
+            if ret_llvm_type == void:
+                self.builder.ret_void()
+            else:
+                # Só alcançável se restar um bloco vazio "pendurado" (ex.: o
+                # merge de um if/else onde os dois ramos já deram `return`) -
+                # a análise semântica já garante que todo caminho de uma função
+                # não-void termina em `return`, então este bloco é inatingível.
+                self.builder.unreachable()
+
+        self.builder = old_builder
         self.current_scope = old_scope
-        self.block_terminated = old_terminated
-        self.reg_count = old_reg_count
-        self.label_count = old_label_count
-        self.current_function_ret_type = None
+        self.current_function = old_function
+        self.current_function_ret_type = old_ret_type
+
+    def visit_FunctionNode(self, node):
+        fn = self.user_functions[node.name]
+        ret_llvm_type = self.get_llvm_type(node.return_type, node.return_dimension)
+        self._build_function_body(fn, node.params, node.body, ret_llvm_type)
 
     def visit_ReturnNode(self, node):
         if node.expression:
             val, v_type = self.visit(node.expression)
-            # Tratar coercão implícita para o tipo esperado de retorno da função
-            if self.current_function_ret_type == 'double' and v_type == 'i32':
-                reg = self.new_reg()
-                self.emit(f"{reg} = sitofp i32 {val} to double")
-                val, v_type = reg, 'double'
-            self.emit(f"ret {self.current_function_ret_type} {val}")
+            if self.current_function_ret_type == f64 and v_type == i32:
+                val = self.builder.sitofp(val, f64)
+            elif isinstance(self.current_function_ret_type, ir.PointerType) and v_type != self.current_function_ret_type:
+                val = ir.Constant(self.current_function_ret_type, None)  # `return null;`
+            self.builder.ret(val)
         else:
-            self.emit("ret void")
-        self.block_terminated = True
+            self.builder.ret_void()
 
     def visit_ClassDeclarationNode(self, node):
-        # As structs de classes já foram processadas na primeira passada
-        # Agora geramos construtores e métodos
+        # Os tipos de struct e as assinaturas de construtor/métodos já foram
+        # pré-declarados em `_preprocess_declarations`; aqui só compilamos os corpos.
         class_name = node.name
-        
-        # Registrar a assinatura de todos os métodos da classe no preprocessador
-        for m in node.methods:
-            sig_key = f"{class_name}_{m.name}"
-            self.functions_sig[sig_key] = (m.return_type, m.return_dimension, [p[0] for p in m.params])
-            
-        # 1. Compilar Construtor
+
         if node.constructor:
             self.visit(node.constructor)
-            
-        # 2. Compilar Métodos
+
         for m in node.methods:
-            # Salvar buffer e escopo
-            old_buf = self.current_buffer
-            old_scope = self.current_scope
-            old_terminated = self.block_terminated
-            old_reg_count = self.reg_count
-            old_label_count = self.label_count
-            
-            self.current_buffer = []
-            self.current_scope = Scope(parent=old_scope)
-            self.reg_count = 0
-            self.label_count = 0
-            self.block_terminated = False
-            
-            ret_type = self.get_llvm_type(m.return_type, m.return_dimension)
-            self.current_function_ret_type = ret_type
-            
-            # Parâmetros: 'this' é sempre o primeiro
-            params_llvm = [f"%struct.{class_name}* %this"]
-            params_allocations = []
-            
-            for p in m.params:
-                p_type, p_name = p[0], p[1]
-                p_dim = p[2] if len(p) > 2 else None
-                p_llvm_type = self.get_llvm_type(p_type, p_dim)
-                if p_dim is not None:
-                    p_llvm_type += "*"
-                reg_in = f"%_in_{p_name}"
-                params_llvm.append(f"{p_llvm_type} {reg_in}")
-                params_allocations.append((p_name, reg_in, p_llvm_type, p_type, p_dim))
-                
-            params_str = ", ".join(params_llvm)
-            
-            self.emit(f"define {ret_type} @{class_name}_{m.name}({params_str}) {{")
-            self.emit("entry:")
-            
-            # Alocar e salvar o 'this' no escopo local
-            self.var_count += 1
-            this_addr = f"%this.addr.{self.var_count}"
-            self.emit(f"{this_addr} = alloca %struct.{class_name}*")
-            self.emit(f"store %struct.{class_name}* %this, %struct.{class_name}** {this_addr}")
-            self.current_scope.define("this", this_addr, f"%struct.{class_name}*", class_name, None)
-            
-            # Alocar parâmetros locais
-            for name, reg_in, llvm_type, jss_type, dimension in params_allocations:
-                self.var_count += 1
-                addr_name = f"%{name}.addr.{self.var_count}"
-                self.emit(f"{addr_name} = alloca {llvm_type}")
-                self.emit(f"store {llvm_type} {reg_in}, {llvm_type}* {addr_name}")
-                self.current_scope.define(name, addr_name, llvm_type, jss_type, dimension)
-                
-            self.visit(m.body)
-            
-            if ret_type == 'void' and not self.block_terminated:
-                self.emit("ret void")
-                
-            if self.current_buffer and self.current_buffer[-1].strip().endswith(":"):
-                self.block_terminated = False
-                self.emit("unreachable")
-                
-            self.current_buffer.append("}")
-            
-            self.func_decls.extend(self.current_buffer)
-            
-            # Restaurar
-            self.current_buffer = old_buf
-            self.current_scope = old_scope
-            self.block_terminated = old_terminated
-            self.reg_count = old_reg_count
-            self.label_count = old_label_count
-            self.current_function_ret_type = None
+            fn = self.classes[class_name]['methods'][m.name]
+            ret_llvm_type = self.get_llvm_type(m.return_type, m.return_dimension)
+            self._build_function_body(fn, m.params, m.body, ret_llvm_type, this_class_name=class_name)
 
     def visit_ClassConstructorNode(self, node):
-        class_name = node.class_name
-        
-        old_buf = self.current_buffer
-        old_scope = self.current_scope
-        old_terminated = self.block_terminated
-        old_reg_count = self.reg_count
-        old_label_count = self.label_count
-        
-        self.current_buffer = []
-        self.current_scope = Scope(parent=old_scope)
-        self.reg_count = 0
-        self.label_count = 0
-        self.block_terminated = False
-        
-        # Construtores sempre retornam void no nosso design
-        ret_type = "void"
-        self.current_function_ret_type = ret_type
-        
-        params_llvm = [f"%struct.{class_name}* %this"]
-        params_allocations = []
-        for p in node.params:
-            p_type, p_name = p[0], p[1]
-            p_dim = p[2] if len(p) > 2 else None
-            p_llvm_type = self.get_llvm_type(p_type, p_dim)
-            if p_dim is not None:
-                p_llvm_type += "*"
-            reg_in = f"%_in_{p_name}"
-            params_llvm.append(f"{p_llvm_type} {reg_in}")
-            params_allocations.append((p_name, reg_in, p_llvm_type, p_type, p_dim))
-            
-        params_str = ", ".join(params_llvm)
-        
-        self.emit(f"define void @{class_name}_constructor({params_str}) {{")
-        self.emit("entry:")
-        
-        # Salvar o 'this'
-        self.var_count += 1
-        this_addr = f"%this.addr.{self.var_count}"
-        self.emit(f"{this_addr} = alloca %struct.{class_name}*")
-        self.emit(f"store %struct.{class_name}* %this, %struct.{class_name}** {this_addr}")
-        self.current_scope.define("this", this_addr, f"%struct.{class_name}*", class_name, None)
-        
-        # Alocar parâmetros locais
-        for name, reg_in, llvm_type, jss_type, dimension in params_allocations:
-            self.var_count += 1
-            addr_name = f"%{name}.addr.{self.var_count}"
-            self.emit(f"{addr_name} = alloca {llvm_type}")
-            self.emit(f"store {llvm_type} {reg_in}, {llvm_type}* {addr_name}")
-            self.current_scope.define(name, addr_name, llvm_type, jss_type, dimension)
-            
-        self.visit(node.body)
-        
-        if not self.block_terminated:
-            self.emit("ret void")
-            
-        if self.current_buffer and self.current_buffer[-1].strip().endswith(":"):
-            self.block_terminated = False
-            self.emit("unreachable")
-            
-        self.current_buffer.append("}")
-        
-        self.func_decls.extend(self.current_buffer)
-        
-        # Restaurar
-        self.current_buffer = old_buf
-        self.current_scope = old_scope
-        self.block_terminated = old_terminated
-        self.reg_count = old_reg_count
-        self.label_count = old_label_count
-        self.current_function_ret_type = None
+        fn = self.classes[node.class_name]['constructor']
+        self._build_function_body(fn, node.params, node.body, void, this_class_name=node.class_name)
 
     def visit_ConsoleLogNode(self, node):
         for idx, expr in enumerate(node.expressions):
             val, v_type = self.visit(expr)
-            
-            # Espaço entre argumentos
             if idx > 0:
-                self.emit("call void @print_space()")
-                
-            if v_type == 'i32':
-                self.emit(f"call void @print_int(i32 {val})")
-            elif v_type == 'double':
-                self.emit(f"call void @print_real(double {val})")
-            elif v_type == 'i8*':
-                self.emit(f"call void @print_str(i8* {val})")
-            elif v_type == 'i1':
-                self.emit(f"call void @print_bool(i1 {val})")
-                
-        self.emit("call void @print_newline()")
+                self.builder.call(self.runtime['print_space'], [])
+            if v_type == i32:
+                self.builder.call(self.runtime['print_int'], [val])
+            elif v_type == f64:
+                self.builder.call(self.runtime['print_real'], [val])
+            elif v_type == i8p:
+                self.builder.call(self.runtime['print_str'], [val])
+            elif v_type == i1:
+                self.builder.call(self.runtime['print_bool'], [val])
+        self.builder.call(self.runtime['print_newline'], [])
 
     def visit_InputNode(self, node):
         for target in node.targets:
             ptr, llvm_type, _, _ = self.get_target_pointer(target)
-            
-            reg = self.new_reg()
-            if llvm_type == 'i32':
-                self.emit(f"{reg} = call i32 @read_int()")
-            elif llvm_type == 'double':
-                self.emit(f"{reg} = call double @read_real()")
-            elif llvm_type == 'i8*':
-                self.emit(f"{reg} = call i8* @read_str()")
-                
-            self.emit(f"store {llvm_type} {reg}, {llvm_type}* {ptr}")
+            if llvm_type == i32:
+                val = self.builder.call(self.runtime['read_int'], [])
+            elif llvm_type == f64:
+                val = self.builder.call(self.runtime['read_real'], [])
+            elif llvm_type == i8p:
+                val = self.builder.call(self.runtime['read_str'], [])
+            else:
+                continue
+            self.builder.store(val, ptr)

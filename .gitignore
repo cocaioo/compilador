@@ -4,5 +4,6 @@ __pycache__/
 *.pyc
 *.ll
 *.exe
+*.o
 output.*
 llvm-mingw/
