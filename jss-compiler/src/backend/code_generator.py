@@ -297,6 +297,8 @@ class CodeGenerator:
         """
         self._preprocess_declarations(ast)
 
+        # O programa JSS inteiro é emitido dentro da `main` nativa do
+        # executável; o `main` do usuário, se existir, é chamado daqui.
         main_fnty = ir.FunctionType(i32, [])
         self.current_function = ir.Function(self.module, main_fnty, name="main")
         self.builder = ir.IRBuilder(self.current_function.append_basic_block("entry"))
@@ -312,6 +314,8 @@ class CodeGenerator:
         return self.module
 
     def visit_ProgramNode(self, node):
+        # O programa raiz é só a sequência de instruções globais na ordem do
+        # fonte; cada uma delas é traduzida e emitida uma após a outra.
         for stmt in node.statements:
             self.visit(stmt)
 
@@ -327,20 +331,26 @@ class CodeGenerator:
     # ------------------------------------------------------------------
 
     def visit_NumberNode(self, node):
+        # Literais numéricos viram constantes LLVM imediatas do tipo correto.
         if node.is_real:
             return ir.Constant(f64, float(node.value)), f64
         return ir.Constant(i32, int(node.value)), i32
 
     def visit_StringNode(self, node):
+        # String literal vira ponteiro para uma constante global compartilhada.
         return self.get_or_create_string_constant(node.value), i8p
 
     def visit_BooleanNode(self, node):
+        # Booleanos são representados como `i1` no LLVM.
         return ir.Constant(i1, 1 if node.value else 0), i1
 
     def visit_NullNode(self, node):
+        # `null` no JSS vira ponteiro nulo genérico no LLVM.
         return ir.Constant(i8p, None), i8p
 
     def visit_IdentifierNode(self, node):
+        # Um identificador vira a leitura do valor armazenado no endereço
+        # encontrado no escopo atual.
         ptr, llvm_type, jss_type, dimension = self.get_target_pointer(node)
         if dimension is not None:
             if isinstance(llvm_type, ir.PointerType):
@@ -371,6 +381,8 @@ class CodeGenerator:
             return res
 
         elif isinstance(node, ArrayAccessNode):
+            # Para acessar um elemento, primeiro obtemos o vetor e depois
+            # calculamos o endereço do índice com `getelementptr`.
             array_ptr, array_type = self.visit(node.array_expr)
             index_val, _ = self.visit(node.index_expr)
             # `array_type` é sempre um ponteiro para vetor (ex.: [3 x i32]* ou,
@@ -382,6 +394,8 @@ class CodeGenerator:
             return ptr, elem_type, "array_elem", None
 
         elif isinstance(node, AttributeAccessNode):
+            # Atributos de classe são campos de `struct` no LLVM; o índice vem
+            # da ordem em que os atributos foram declarados.
             obj_ptr, obj_type = self.visit(node.object_expr)
             class_name = obj_type.pointee.name.split(".", 1)[1]
             class_info = self.classes[class_name]
@@ -398,6 +412,8 @@ class CodeGenerator:
         raise ValueError(f"No de destino invalido: {type(node).__name__}")
 
     def visit_ArrayAccessNode(self, node):
+        # Se o acesso já aponta para um subvetor, devolvemos o endereço dele;
+        # caso contrário, carregamos o valor do elemento.
         ptr, llvm_type, _, dimension = self.get_target_pointer(node)
         if dimension is not None or isinstance(llvm_type, ir.ArrayType):
             # O próprio elemento acessado ainda é um vetor (acesso parcial em uma
@@ -407,12 +423,15 @@ class CodeGenerator:
         return self.builder.load(ptr), llvm_type
 
     def visit_AttributeAccessNode(self, node):
+        # Acesso a atributo funciona igual a um acesso a campo de struct.
         ptr, llvm_type, _, dimension = self.get_target_pointer(node)
         if dimension is not None or isinstance(llvm_type, ir.ArrayType):
             return ptr, ir.PointerType(llvm_type)
         return self.builder.load(ptr), llvm_type
 
     def visit_BinaryOpNode(self, node):
+        # Operadores binários cobrem aritmética, comparação, concatenação e
+        # curto-circuito lógico.
         op = node.op
 
         # `&&` e `||` têm avaliação de curto-circuito: o lado direito só pode
@@ -423,6 +442,8 @@ class CodeGenerator:
         elif op == '||':
             return self._generate_short_circuit_or(node)
 
+        # Operadores normais avaliam os dois lados antes de aplicar coerção ou
+        # escolher a instrução LLVM adequada.
         l_val, l_type = self.visit(node.left)
         r_val, r_type = self.visit(node.right)
 
@@ -434,6 +455,7 @@ class CodeGenerator:
 
         # Concatenação de string: `+` onde pelo menos um dos lados é `str`
         if op == '+' and (l_type == i8p or r_type == i8p):
+            # `+` também faz concatenação quando um dos operandos é string.
             if l_type != i8p:
                 l_val, l_type = self._cast_value_to_string(l_val, l_type)
             if r_type != i8p:
@@ -528,6 +550,7 @@ class CodeGenerator:
         return phi, i1
 
     def visit_UnaryOpNode(self, node):
+        # Operadores unários tratam prefixo, negação lógica e sinais.
         op = node.op
 
         if op in ('++', '--'):
@@ -557,6 +580,7 @@ class CodeGenerator:
         return ir.Constant(i32, 0), void
 
     def visit_CastNode(self, node):
+        # Casting explícito converte o valor para o tipo-alvo pedido na AST.
         val, from_type = self.visit(node.expression)
         target = node.target_type
 
@@ -587,6 +611,7 @@ class CodeGenerator:
         return ir.Constant(i32, 0), void
 
     def visit_NewObjectNode(self, node):
+        # `new` aloca memória para a struct da classe e chama o construtor.
         class_name = node.class_name
         struct_ty = self.classes[class_name]['struct_type']
         struct_ptr_ty = ir.PointerType(struct_ty)
@@ -631,6 +656,8 @@ class CodeGenerator:
         return args
 
     def visit_CallNode(self, node):
+        # Chamada pode ser função global ou método de objeto; ambas usam a
+        # assinatura já pré-declarada antes da geração do corpo.
         if isinstance(node.callee, AttributeAccessNode):
             # Chamada de método: obj.metodo(args)
             obj_ptr, obj_type = self.visit(node.callee.object_expr)
@@ -652,6 +679,8 @@ class CodeGenerator:
         return result, fn.function_type.return_type
 
     def visit_ArrayLiteralNode(self, node):
+        # Literais de vetor não viram uma instrução sozinhos; retornam os
+        # elementos avaliados para quem for fazer a inicialização.
         # Literais de vetor só aparecem em inicializações; devolvemos a lista de
         # valores avaliados para quem estiver processando a declaração/atribuição.
         return [self.visit(expr) for expr in node.expressions], "literal_array"
@@ -661,6 +690,8 @@ class CodeGenerator:
     # ------------------------------------------------------------------
 
     def visit_VarDeclarationNode(self, node):
+        # Declaração cria armazenamento e, se houver inicializador, grava o
+        # valor inicial no endereço recém-criado.
         var_type = node.var_type
         dimension = node.dimension
         llvm_type = self.get_llvm_type(var_type, dimension)
@@ -676,7 +707,6 @@ class CodeGenerator:
             self.current_scope.define(node.name, gv, llvm_type, var_type, dimension)
             target_ptr = gv
         else:
-            # Variável local: alocada na pilha da função atual.
             target_ptr = self.builder.alloca(llvm_type, name=f"{node.name}.addr")
             self.current_scope.define(node.name, target_ptr, llvm_type, var_type, dimension)
             if not node.value:
@@ -698,6 +728,8 @@ class CodeGenerator:
                 self.builder.store(val, target_ptr)
 
     def visit_AssignmentNode(self, node):
+        # Atribuições simples e compostas reaproveitam a mesma lógica de
+        # localizar o alvo e atualizar o valor armazenado.
         op = node.op
 
         if op in ('&&=', '||='):
@@ -732,6 +764,8 @@ class CodeGenerator:
         ptr, llvm_type, _, _ = self.get_target_pointer(node.target)
 
         if op == '=':
+            # Atribuição simples só precisa ajustar o tipo quando o JSS permite
+            # coerção implícita, como `int -> real` ou `null` para objetos.
             val, v_type = self.visit(node.value)
             if llvm_type == f64 and v_type == i32:
                 val = self.builder.sitofp(val, f64)
@@ -761,6 +795,8 @@ class CodeGenerator:
         return result, llvm_type
 
     def visit_BlockNode(self, node):
+        # Cada bloco abre um novo escopo léxico e fecha quando o fluxo termina.
+        # Cada bloco abre um novo escopo léxico.
         old_scope = self.current_scope
         self.current_scope = Scope(parent=old_scope)
         for stmt in node.statements:
@@ -774,6 +810,8 @@ class CodeGenerator:
         self.current_scope = old_scope
 
     def visit_IfNode(self, node):
+        # O `if` vira desvio condicional com blocos then/else/merge.
+        # O `if` vira blocos explícitos de then/else/merge.
         cond_val, _ = self.visit(node.condition)
 
         then_block = self.current_function.append_basic_block("if.then")
@@ -796,26 +834,41 @@ class CodeGenerator:
         self.builder = ir.IRBuilder(merge_block)
 
     def visit_WhileNode(self, node):
+        # O `while` é montado como três blocos: condição, corpo e saída.
+        # O `while` não vira uma instrução única no LLVM.
+        # Ele é quebrado em blocos básicos: um para testar a condição,
+        # outro para executar o corpo e um terceiro para sair do laço.
         cond_block = self.current_function.append_basic_block("while.cond")
         body_block = self.current_function.append_basic_block("while.body")
         end_block = self.current_function.append_basic_block("while.end")
 
+        # O fluxo atual desvia primeiro para o bloco que avalia a condição.
         self.builder.branch(cond_block)
 
+        # No bloco da condição, o compilador traduz a expressão do `while`
+        # e cria um salto condicional: verdadeiro entra no corpo, falso sai.
         self.builder = ir.IRBuilder(cond_block)
         cond_val, _ = self.visit(node.condition)
         self.builder.cbranch(cond_val, body_block, end_block)
 
+        # No corpo, empilhamos o bloco de saída para que `break` saiba para
+        # onde saltar caso apareça dentro do laço.
         self.builder = ir.IRBuilder(body_block)
         self.loop_stack.append(end_block)
         self.visit(node.body)
         self.loop_stack.pop()
+
+        # Se o corpo não terminou com `return` ou `break`, o fluxo volta para
+        # reavaliar a condição e repetir o laço.
         if not self.builder.block.is_terminated:
             self.builder.branch(cond_block)
 
+        # Depois do laço, o builder continua emitindo código a partir daqui.
         self.builder = ir.IRBuilder(end_block)
 
     def visit_ForNode(self, node):
+        # O `for` é desdobrado em init, teste, corpo, passo e retorno ao teste.
+        # `for` é decomposto em init -> condição -> corpo -> passo -> repetição.
         cond_block = self.current_function.append_basic_block("for.cond")
         body_block = self.current_function.append_basic_block("for.body")
         step_block = self.current_function.append_basic_block("for.step")
@@ -851,6 +904,7 @@ class CodeGenerator:
         self.current_scope = old_scope
 
     def visit_BreakNode(self, node):
+        # `break` apenas salta para o final do laço mais interno ativo.
         if self.loop_stack:
             self.builder.branch(self.loop_stack[-1])
 
@@ -908,11 +962,15 @@ class CodeGenerator:
         self.current_function_ret_type = old_ret_type
 
     def visit_FunctionNode(self, node):
+        # Função global vira um corpo LLVM separado, usando a assinatura já
+        # pré-declarada no pré-processamento.
         fn = self.user_functions[node.name]
         ret_llvm_type = self.get_llvm_type(node.return_type, node.return_dimension)
         self._build_function_body(fn, node.params, node.body, ret_llvm_type)
 
     def visit_ReturnNode(self, node):
+        # `return` encerra o bloco atual com o valor convertido para o tipo da
+        # função, quando necessário.
         if node.expression:
             val, v_type = self.visit(node.expression)
             if self.current_function_ret_type == f64 and v_type == i32:
@@ -924,6 +982,8 @@ class CodeGenerator:
             self.builder.ret_void()
 
     def visit_ClassDeclarationNode(self, node):
+        # Classe já teve tipo e assinaturas declarados; aqui só compilamos os
+        # corpos do construtor e dos métodos.
         # Os tipos de struct e as assinaturas de construtor/métodos já foram
         # pré-declarados em `_preprocess_declarations`; aqui só compilamos os corpos.
         class_name = node.name
@@ -937,10 +997,14 @@ class CodeGenerator:
             self._build_function_body(fn, m.params, m.body, ret_llvm_type, this_class_name=class_name)
 
     def visit_ClassConstructorNode(self, node):
+        # Construtor é compilado como uma função void que recebe `this`.
         fn = self.classes[node.class_name]['constructor']
         self._build_function_body(fn, node.params, node.body, void, this_class_name=node.class_name)
 
     def visit_ConsoleLogNode(self, node):
+        # `console.log` é expandido em chamadas do runtime para cada argumento.
+        # `console.log` vira uma sequência de chamadas do runtime, uma por
+        # expressão, com espaço entre elas e newline no final.
         for idx, expr in enumerate(node.expressions):
             val, v_type = self.visit(expr)
             if idx > 0:
@@ -956,6 +1020,7 @@ class CodeGenerator:
         self.builder.call(self.runtime['print_newline'], [])
 
     def visit_InputNode(self, node):
+        # `input` lê do runtime e grava o resultado diretamente nos alvos.
         for target in node.targets:
             ptr, llvm_type, _, _ = self.get_target_pointer(target)
             if llvm_type == i32:

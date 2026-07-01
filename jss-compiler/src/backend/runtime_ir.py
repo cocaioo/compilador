@@ -179,6 +179,7 @@ def _build_print_int(module, libc, strs):
     fn = ir.Function(module, ir.FunctionType(void, [i32]), name="print_int")
     fn.args[0].name = "val"
     builder = ir.IRBuilder(fn.append_basic_block("entry"))
+    # `console.log` chama esta função quando a expressão avaliada é um inteiro.
     fmt = _global_cstr(module, strs, "%d")
     builder.call(libc['printf'], [fmt, fn.args[0]])
     builder.ret_void()
@@ -190,6 +191,7 @@ def _build_print_real(module, libc, strs):
     fn = ir.Function(module, ir.FunctionType(void, [f64]), name="print_real")
     fn.args[0].name = "val"
     builder = ir.IRBuilder(fn.append_basic_block("entry"))
+    # O backend escolhe este caminho quando a expressão de `console.log` tem tipo real.
     fmt = _global_cstr(module, strs, "%g")
     builder.call(libc['printf'], [fmt, fn.args[0]])
     builder.ret_void()
@@ -206,6 +208,7 @@ def _build_print_str(module, libc, strs):
     done = fn.append_basic_block("done")
 
     builder = ir.IRBuilder(entry)
+    # Strings nulas são tratadas como ausência de texto e não devem quebrar o `printf`.
     is_null = builder.icmp_unsigned('==', fn.args[0], _null_i8p())
     builder.cbranch(is_null, done, do_print)
 
@@ -225,6 +228,7 @@ def _build_print_bool(module, libc, strs):
     fn = ir.Function(module, ir.FunctionType(void, [i1]), name="print_bool")
     fn.args[0].name = "val"
     builder = ir.IRBuilder(fn.append_basic_block("entry"))
+    # Em vez de montar um `if`, o runtime usa `select` para escolher a string.
     s_true = _global_cstr(module, strs, "true")
     s_false = _global_cstr(module, strs, "false")
     # `select` escolhe entre os dois ponteiros sem precisar de um `if` (branch) em IR.
@@ -239,6 +243,7 @@ def _build_print_space(module, libc, strs):
     """`print_space()`: imprime um único espaço (usado entre argumentos de `console.log`)."""
     fn = ir.Function(module, ir.FunctionType(void, []), name="print_space")
     builder = ir.IRBuilder(fn.append_basic_block("entry"))
+    # Mantém a mesma separação visual que `console.log(a, b, c)` costuma ter.
     s = _global_cstr(module, strs, " ")
     builder.call(libc['printf'], [s])
     builder.ret_void()
@@ -249,6 +254,7 @@ def _build_print_newline(module, libc, strs):
     """`print_newline()`: imprime uma quebra de linha (fim de cada `console.log`)."""
     fn = ir.Function(module, ir.FunctionType(void, []), name="print_newline")
     builder = ir.IRBuilder(fn.append_basic_block("entry"))
+    # Toda chamada de `console.log` termina com nova linha.
     s = _global_cstr(module, strs, "\n")
     builder.call(libc['printf'], [s])
     builder.ret_void()
