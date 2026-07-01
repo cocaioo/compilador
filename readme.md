@@ -6,7 +6,7 @@ O compilador integra:
 1. **Análise Léxica (`lexer.py`):** Reconhecimento de tokens e detecção de caracteres/padrões inválidos.
 2. **Análise Sintática (`parser.py`):** Validação gramatical e construção da Árvore de Sintaxe Abstrata (AST) com recuperação de erros sintáticos (sincronização de chaves).
 3. **Análise Semântica (`semantic.py`):** Validação de escopos, tipos, constantes, passagem de vetores por parâmetro (validação estática de tamanho), limites de índices de vetores (validação de out of bounds para índices constantes) e propagação segura de tipos inválidos para evitar o efeito cascata.
-4. **Geração de Código LLVM IR (`code_generator.py`):** Tradução completa da AST do JSS para um módulo LLVM, construído programaticamente com a API `llvmlite.ir` (nenhum código LLVM é montado como texto solto).
+4. **Geração de Código LLVM IR (`code_generator.py`):** Tradução completa da AST do JSS para um módulo LLVM, construído programaticamente com a API `llvmlite.ir` (veja as regras de tradução detalhadas e exemplos no [Guia de Geração de Código](file:///c:/Users/Caio/Desktop/compilador/GERACAO_CODIGO.md)).
 5. **Runtime de Suporte (`runtime_ir.py`):** Biblioteca auxiliar que implementa funções do sistema (E/S, conversão e concatenação de strings, potência inteira), escrita diretamente como funções LLVM IR (via `llvmlite.ir`) e injetada no mesmo módulo do programa do usuário - substitui o antigo `runtime.c`, eliminando qualquer dependência de compilar código C.
 
 ---
