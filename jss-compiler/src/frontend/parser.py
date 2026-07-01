@@ -16,23 +16,29 @@ from frontend.ast_nodes import (
     StringNode, BooleanNode, NullNode, IdentifierNode
 )
 
-# Proxy de lexer com buffer de push-back para recuperacao de erros.
-# O PLY captura lexer.token no inicio de parse(); por isso, o token devolvido
-# precisa passar pelo mesmo objeto usado pelo parser.
+# --- PROXY DE LEXER COM SUPORTE A PUSH-BACK ---
+# O PLY por padrão consome tokens sequencialmente do Lexer. Para implementar a
+# recuperação inteligente de ponto-e-vírgula ausente, precisamos reinserir um
+# token de volta no fluxo de entrada (fazer push-back) para que ele seja reprocessado
+# após inserirmos um ';' sintético. Esse proxy embrulha o lexer original e
+# gerencia uma fila local de tokens pendentes (`self._pending`).
 class _BufferedLexer:
     def __init__(self, lexer):
         self._lexer = lexer
-        self._pending = []
+        self._pending = []  # Fila de tokens que foram devolvidos ao lexer
 
     def token(self):
+        # Se houver tokens devolvidos/pendentes, consome deles primeiro
         if self._pending:
             return self._pending.pop(0)
         return self._lexer.token()
 
     def push_token(self, tok):
+        # Devolve o token para a frente da fila
         self._pending.append(tok)
 
     def __getattr__(self, name):
+        # Repassa qualquer outro acesso a atributo para o lexer original (ex: lineno, lexpos)
         return getattr(self._lexer, name)
 
     def __setattr__(self, name, value):
@@ -41,7 +47,14 @@ class _BufferedLexer:
         else:
             setattr(self._lexer, name, value)
 
-# Wrapper para coletar multiplos erros e levantar uma unica excecao ao final
+
+# --- WRAPPER PARA COLETA E AGREGAÇÃO DE MÚLTIPLOS ERROS ---
+# Normalmente, o parser PLY aborta na primeira falha léxica ou sintática.
+# Esse wrapper intercepta as chamadas de parse e ativa o modo 'collect_errors' no
+# lexer e no parser. Ao final do processamento, ele reúne todos os erros lexicais
+# e sintáticos acumulados, remove duplicatas e levanta uma única exceção 'SyntacticError'
+# contendo o relatório completo dos erros. Isso permite que o usuário veja
+# múltiplos erros no mesmo arquivo de uma só vez.
 class _ParserWrapper:
     def __init__(self, real_parser):
         object.__setattr__(self, '_real', real_parser)
@@ -596,16 +609,21 @@ TOKEN_TRANSLATIONS = {
     'NULL': "o valor 'null'",
 }
 
+# Função de tratamento de erros sintáticos do PLY.
+# Ela é disparada pelo parser quando uma transição inválida é encontrada na tabela LALR.
+# Implementa regras inteligentes de recuperação de erro (panico controlado e inserção de tokens virtuais).
 def p_error(p):
+    # Tenta inspecionar a pilha de estados do parser para descobrir quais tokens eram esperados
     try:
         state = parser.statestack[-1]
         raw_expected = list(parser.action[state].keys())
     except (NameError, AttributeError, IndexError):
         raw_expected = []
 
-    # Recuperacao de ponto-e-virgula ausente.
-    # Quando a expressao ja foi reduzida e o token atual inicia outro statement,
-    # inserimos um ';' sintetico e recolocamos o token atual no lexer.
+    # --- RECUPERAÇÃO AUTOMÁTICA DE PONTO-E-VÍRGULA AUSENTE (SEMICOLON INJECTION) ---
+    # Quando o parser encontra um token que inicia um novo comando (ex: 'let', 'if', 'function')
+    # mas o estado atual esperava um ';', nós injetamos um ';' virtual.
+    # Isso impede que a falta de um ';' quebre a análise de todo o resto do arquivo.
     STATEMENT_START_TOKENS = {
         'LET', 'CONST', 'FUNCTION', 'IF', 'ELSE', 'WHILE', 'FOR', 'BREAK',
         'RETURN', 'CLASS', 'CONSOLE_LOG', 'INPUT', 'ID', 'INT_LITERAL',
