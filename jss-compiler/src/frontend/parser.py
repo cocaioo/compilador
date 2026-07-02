@@ -16,23 +16,29 @@ from frontend.ast_nodes import (
     StringNode, BooleanNode, NullNode, IdentifierNode
 )
 
-# Proxy de lexer com buffer de push-back para recuperacao de erros.
-# O PLY captura lexer.token no inicio de parse(); por isso, o token devolvido
-# precisa passar pelo mesmo objeto usado pelo parser.
+# --- PROXY DE LEXER COM SUPORTE A PUSH-BACK ---
+# O PLY por padrão consome tokens sequencialmente do Lexer. Para implementar a
+# recuperação inteligente de ponto-e-vírgula ausente, precisamos reinserir um
+# token de volta no fluxo de entrada (fazer push-back) para que ele seja reprocessado
+# após inserirmos um ';' sintético. Esse proxy embrulha o lexer original e
+# gerencia uma fila local de tokens pendentes (`self._pending`).
 class _BufferedLexer:
     def __init__(self, lexer):
         self._lexer = lexer
-        self._pending = []
+        self._pending = []  # Fila de tokens que foram devolvidos ao lexer
 
     def token(self):
+        # Se houver tokens devolvidos/pendentes, consome deles primeiro
         if self._pending:
             return self._pending.pop(0)
         return self._lexer.token()
 
     def push_token(self, tok):
+        # Devolve o token para a frente da fila
         self._pending.append(tok)
 
     def __getattr__(self, name):
+        # Repassa qualquer outro acesso a atributo para o lexer original (ex: lineno, lexpos)
         return getattr(self._lexer, name)
 
     def __setattr__(self, name, value):
@@ -41,7 +47,14 @@ class _BufferedLexer:
         else:
             setattr(self._lexer, name, value)
 
-# Wrapper para coletar multiplos erros e levantar uma unica excecao ao final
+
+# --- WRAPPER PARA COLETA E AGREGAÇÃO DE MÚLTIPLOS ERROS ---
+# Normalmente, o parser PLY aborta na primeira falha léxica ou sintática.
+# Esse wrapper intercepta as chamadas de parse e ativa o modo 'collect_errors' no
+# lexer e no parser. Ao final do processamento, ele reúne todos os erros lexicais
+# e sintáticos acumulados, remove duplicatas e levanta uma única exceção 'SyntacticError'
+# contendo o relatório completo dos erros. Isso permite que o usuário veja
+# múltiplos erros no mesmo arquivo de uma só vez.
 class _ParserWrapper:
     def __init__(self, real_parser):
         object.__setattr__(self, '_real', real_parser)
@@ -102,6 +115,8 @@ precedence = (
 
 def p_program(p):
     'program : statement_list'
+    # A AST completa nasce aqui: o parser reduz a lista de statements do
+    # arquivo inteiro e a empacota no nó raiz `ProgramNode`.
     p[0] = ProgramNode(p[1])
 
 def flatten(lst):
@@ -139,6 +154,8 @@ def p_statement(p):
                  | console_log_statement
                  | input_statement
                  | expression_statement'''
+    # Cada regra específica já constrói seu próprio nó da AST; aqui apenas
+    # propagamos o nó produzido para a lista de statements do programa/bloco.
     p[0] = p[1]
 
 def p_type(p):
@@ -180,18 +197,27 @@ def p_var_declaration_no_semicolon(p):
     is_const = (p[1] == 'const')
     if len(p) == 4:
         if len(p[3]) == 1:
+            # Declaração simples sem inicializador, como `let int x`, gera um
+            # único `VarDeclarationNode`.
             p[0] = VarDeclarationNode(var_type=p[2], name=p[3][0], value=None, is_const=is_const, dimension=None)
         else:
+            # Quando a gramática aceita múltiplos nomes (`let int a, b, c`),
+            # o parser cria um `VarDeclarationNode` para cada identificador.
             p[0] = [VarDeclarationNode(var_type=p[2], name=name, value=None, is_const=is_const, dimension=None) for name in p[3]]
     elif len(p) == 5:
         dims = p[3]
         dimension = dims[0] if len(dims) == 1 else dims
+        # Vetores entram na AST com a dimensão já acoplada ao nó da variável.
         p[0] = VarDeclarationNode(var_type=p[2], name=p[4], value=None, is_const=is_const, dimension=dimension)
     elif len(p) == 6:
+        # Declaração com inicialização (`let int x = expr`) já liga tipo,
+        # nome e expressão inicial no mesmo `VarDeclarationNode`.
         p[0] = VarDeclarationNode(var_type=p[2], name=p[3], value=p[5], is_const=is_const, dimension=None)
     elif len(p) == 7:
         dims = p[3]
         dimension = dims[0] if len(dims) == 1 else dims
+        # Vetor com inicialização também vira um `VarDeclarationNode`, com a
+        # dimensão e a expressão inicial preservadas para o backend.
         p[0] = VarDeclarationNode(var_type=p[2], name=p[4], value=p[6], is_const=is_const, dimension=dimension)
 
 def p_var_declaration(p):
@@ -215,6 +241,8 @@ def p_expression_assignment(p):
         if not hasattr(parser, 'errors'):
             parser.errors = []
         parser.errors.append(formatted)
+    # Ao reconhecer `x = expr` ou `x += expr`, o parser materializa isso
+    # diretamente como um `AssignmentNode` na AST.
     p[0] = AssignmentNode(target=p[1], value=p[3], op=p[2])
 
 def p_expression_binop(p):
@@ -232,6 +260,8 @@ def p_expression_binop(p):
                   | expression LE expression
                   | expression AND expression
                   | expression OR expression'''
+    # Expressões binárias não ficam como texto: o parser já liga os operandos
+    # e o operador em um `BinaryOpNode`.
     p[0] = BinaryOpNode(left=p[1], op=p[2], right=p[3])
 
 def p_expression_unary(p):
@@ -249,56 +279,73 @@ def p_expression_unary(p):
             if not hasattr(parser, 'errors'):
                 parser.errors = []
             parser.errors.append(formatted)
+    # O mesmo vale para operações unárias, que viram um `UnaryOpNode`.
     p[0] = UnaryOpNode(op=p[1], expression=p[2])
 
 def p_expression_array_access(p):
     'expression : expression LBRACKET expression RBRACKET'
+    # `v[i]` vira um `ArrayAccessNode`, preservando separadamente o vetor-base
+    # e a expressão de índice para as fases seguintes.
     p[0] = ArrayAccessNode(array_expr=p[1], index_expr=p[3])
 
 def p_expression_attribute_access(p):
     '''expression : expression DOT ID
                   | THIS DOT ID'''
     obj = IdentifierNode("this") if p[1] == 'this' else p[1]
+    # Acesso a atributo (`obj.x` ou `this.x`) é representado explicitamente
+    # como `AttributeAccessNode`, em vez de permanecer como string.
     p[0] = AttributeAccessNode(object_expr=obj, attribute_name=p[3])
 
 def p_expression_id(p):
     'expression : ID'
+    # Um identificador isolado já entra na AST como `IdentifierNode`.
     p[0] = IdentifierNode(p[1])
 
 def p_expression_number(p):
     '''expression : INT_LITERAL
                   | REAL_LITERAL'''
+    # Literais numéricos viram nós próprios, carregando também a informação
+    # se o valor foi lido como inteiro ou real.
     is_real = isinstance(p[1], float)
     p[0] = NumberNode(p[1], is_real=is_real)
 
 def p_expression_string(p):
     'expression : STRING_LITERAL'
+    # String literal gera um `StringNode`.
     p[0] = StringNode(p[1])
 
 def p_expression_boolean(p):
     '''expression : TRUE
                   | FALSE'''
     val = True if p[1] == 'true' else False
+    # `true` e `false` viram um `BooleanNode`.
     p[0] = BooleanNode(val)
 
 def p_expression_null(p):
     'expression : NULL'
+    # `null` também entra explicitamente na árvore.
     p[0] = NullNode()
 
 def p_expression_group(p):
     'expression : LPAREN expression RPAREN'
+    # Parênteses não criam um nó extra; eles só alteram a precedência e o
+    # parser devolve a expressão interna já construída.
     p[0] = p[2]
 
 def p_expression_new(p):
     'expression : NEW ID LPAREN argument_list RPAREN'
+    # Instanciação de objeto vira `NewObjectNode`, guardando a classe e a lista
+    # de argumentos do construtor.
     p[0] = NewObjectNode(class_name=p[2], arguments=p[4])
 
 def p_expression_call(p):
     'expression : expression LPAREN argument_list RPAREN'
+    # Chamadas de função/método são capturadas como `CallNode`.
     p[0] = CallNode(callee=p[1], arguments=p[3])
 
 def p_expression_array_literal(p):
     'expression : LBRACKET argument_list RBRACKET'
+    # Um literal de vetor `[a, b, c]` vira `ArrayLiteralNode`.
     p[0] = ArrayLiteralNode(p[2])
 
 def p_expression_cast(p):
@@ -307,6 +354,7 @@ def p_expression_cast(p):
                   | BOOL_TYPE LPAREN expression RPAREN
                   | STR_TYPE LPAREN expression RPAREN'''
     target = p[1]
+    # Cast explícito, como `int(x)` ou `str(y)`, vira `CastNode`.
     p[0] = CastNode(target_type=target, expression=p[3])
 
 def p_argument_list(p):
@@ -327,12 +375,15 @@ def p_if_statement(p):
                     | IF LPAREN expression RPAREN block ELSE block
                     | IF LPAREN expression RPAREN block ELSE if_statement'''
     if len(p) == 6:
+        # O parser já separa condição e ramo `then` em um `IfNode`.
         p[0] = IfNode(condition=p[3], then_branch=p[5])
     else:
+        # Quando há `else`, ele já fica anexado ao mesmo nó.
         p[0] = IfNode(condition=p[3], then_branch=p[5], else_branch=p[7])
 
 def p_while_statement(p):
     'while_statement : WHILE LPAREN expression RPAREN block'
+    # `while` vira um `WhileNode` com condição e corpo.
     p[0] = WhileNode(condition=p[3], body=p[5])
 
 def p_expression_opt(p):
@@ -349,15 +400,20 @@ def p_for_init(p):
 def p_for_statement(p):
     'for_statement : FOR LPAREN for_init SEMICOLON expression_opt SEMICOLON expression_opt RPAREN block'
     init = BlockNode(p[3]) if isinstance(p[3], list) else p[3]
+    # O `for` já é normalizado na AST com quatro partes bem definidas:
+    # inicialização, condição, atualização e corpo.
     p[0] = ForNode(init=init, condition=p[5], update=p[7], body=p[9])
 
 def p_for_statement_error(p):
     'for_statement : FOR LPAREN error RPAREN block'
+    # Mesmo em recuperação de erro, o parser devolve um `ForNode` mínimo para
+    # que as próximas fases ainda possam percorrer uma AST parcial.
     p[0] = ForNode(init=None, condition=None, update=None, body=p[5])
     p.parser.errok()
 
 def p_break_statement(p):
     'break_statement : BREAK SEMICOLON'
+    # `break;` vira um `BreakNode`.
     p[0] = BreakNode()
 
 def p_block(p):
@@ -365,6 +421,7 @@ def p_block(p):
              | LBRACE RBRACE
              | LBRACE error RBRACE'''
     if len(p) == 4 and isinstance(p[2], list):
+        # Um bloco `{ ... }` agrupa a sequência interna em `BlockNode`.
         p[0] = BlockNode(p[2])
     else:
         p[0] = BlockNode([])
@@ -374,6 +431,8 @@ def p_function_declaration(p):
     '''function_declaration : FUNCTION return_type ID LPAREN param_list RPAREN block
                             | FUNCTION type dimension_list ID LPAREN param_list RPAREN block'''
     if len(p) == 8:
+        # Declarações de função já saem do parser como `FunctionNode`, prontas
+        # para a análise semântica e a geração de código.
         p[0] = FunctionNode(return_type=p[2], name=p[3], params=p[5], body=p[7])
     else:
         dims = p[3]
@@ -384,10 +443,13 @@ def p_function_declaration_error(p):
     '''function_declaration : FUNCTION return_type ID LPAREN param_list RPAREN error RBRACE
                             | FUNCTION type dimension_list ID LPAREN param_list RPAREN error RBRACE'''
     if len(p) == 9:
+        # Em caso de erro no corpo da função, preservamos a assinatura na AST e
+        # substituímos o corpo por um `BlockNode([])` para seguir a análise.
         p[0] = FunctionNode(return_type=p[2], name=p[3], params=p[5], body=BlockNode([]))
     else:
         dims = p[3]
         ret_dim = dims[0] if len(dims) == 1 else dims
+        # A mesma estratégia vale para funções que retornam vetor.
         p[0] = FunctionNode(return_type=p[2], name=p[4], params=p[6], body=BlockNode([]), return_dimension=ret_dim)
     p.parser.errok()
 
@@ -418,8 +480,10 @@ def p_return_statement(p):
     '''return_statement : RETURN expression SEMICOLON
                         | RETURN SEMICOLON'''
     if len(p) == 4:
+        # `return expr;` vira um `ReturnNode` com expressão associada.
         p[0] = ReturnNode(expression=p[2])
     else:
+        # `return;` vira um `ReturnNode` sem expressão.
         p[0] = ReturnNode(expression=None)
 
 def p_class_declaration(p):
@@ -453,6 +517,8 @@ def p_class_declaration(p):
         if not hasattr(parser, 'errors'):
             parser.errors = []
         parser.errors.append(formatted)
+    # A declaração inteira da classe é reunida em um `ClassDeclarationNode`,
+    # contendo atributos, construtor e métodos já parseados separadamente.
     p[0] = ClassDeclarationNode(name=p[2], attributes=attrs, constructor=constructor, methods=methods)
 
 def p_class_member_list(p):
@@ -478,18 +544,24 @@ def p_class_attribute(p):
     '''class_attribute : type ID SEMICOLON
                        | type dimension_list ID SEMICOLON'''
     if len(p) == 4:
+        # Cada atributo de classe usa o mesmo nó de declaração de variável,
+        # porque semanticamente ele também é uma variável tipada.
         p[0] = VarDeclarationNode(var_type=p[1], name=p[2], value=None, is_const=False)
     else:
         dims = p[2]
         dimension = dims[0] if len(dims) == 1 else dims
+        # Atributos vetor preservam a dimensão no `VarDeclarationNode`.
         p[0] = VarDeclarationNode(var_type=p[1], name=p[3], value=None, is_const=False, dimension=dimension)
 
 def p_class_constructor(p):
     'class_constructor : ID CONSTRUCTOR LPAREN param_list RPAREN block'
+    # O construtor vira um `ClassConstructorNode`, separado dos métodos comuns
+    # para o backend tratar a inicialização de `this`.
     p[0] = ClassConstructorNode(class_name=p[1], params=p[4], body=p[6])
 
 def p_class_constructor_error(p):
     'class_constructor : ID CONSTRUCTOR LPAREN param_list RPAREN error RBRACE'
+    # Em recuperação de erro, mantemos o construtor na AST com corpo vazio.
     p[0] = ClassConstructorNode(class_name=p[1], params=p[4], body=BlockNode([]))
     p.parser.errok()
 
@@ -498,10 +570,13 @@ def p_class_method(p):
                     | VOID_TYPE ID LPAREN param_list RPAREN block
                     | type dimension_list ID LPAREN param_list RPAREN block'''
     if len(p) == 7:
+        # Métodos de classe reutilizam `FunctionNode`, já que estruturalmente
+        # são funções com assinatura e corpo.
         p[0] = FunctionNode(return_type=p[1], name=p[2], params=p[4], body=p[6])
     elif len(p) == 8:
         dims = p[2]
         ret_dim = dims[0] if len(dims) == 1 else dims
+        # Métodos com retorno vetorial também são representados por `FunctionNode`.
         p[0] = FunctionNode(return_type=p[1], name=p[3], params=p[5], body=p[7], return_dimension=ret_dim)
 
 def p_class_method_error(p):
@@ -509,15 +584,20 @@ def p_class_method_error(p):
                     | VOID_TYPE ID LPAREN param_list RPAREN error RBRACE
                     | type dimension_list ID LPAREN param_list RPAREN error RBRACE'''
     if len(p) == 8:
+        # Se houver erro no corpo do método, preservamos a assinatura e usamos
+        # um bloco vazio para continuar montando a AST.
         p[0] = FunctionNode(return_type=p[1], name=p[2], params=p[4], body=BlockNode([]))
     elif len(p) == 9:
         dims = p[2]
         ret_dim = dims[0] if len(dims) == 1 else dims
+        # O mesmo fallback é usado para métodos que retornam vetor.
         p[0] = FunctionNode(return_type=p[1], name=p[3], params=p[5], body=BlockNode([]), return_dimension=ret_dim)
     p.parser.errok()
 
 def p_console_log_statement(p):
     'console_log_statement : CONSOLE_LOG LPAREN argument_list RPAREN SEMICOLON'
+    # `console.log(...)` gera um `ConsoleLogNode` contendo a lista de
+    # expressões já parseadas; é esse nó que o backend visitará depois.
     p[0] = ConsoleLogNode(expressions=p[3])
 
 def p_input_statement(p):
@@ -531,10 +611,13 @@ def p_input_statement(p):
             if not hasattr(parser, 'errors'):
                 parser.errors = []
             parser.errors.append(formatted)
+    # `input(...)` também é transformado diretamente em um nó próprio da AST.
     p[0] = InputNode(targets=p[3])
 
 def p_expression_statement(p):
     'expression_statement : expression SEMICOLON'
+    # Quando uma expressão aparece sozinha como statement, o próprio nó da
+    # expressão é reutilizado na AST; não criamos um wrapper extra.
     p[0] = p[1]
 
 def p_empty(p):
@@ -596,16 +679,21 @@ TOKEN_TRANSLATIONS = {
     'NULL': "o valor 'null'",
 }
 
+# Função de tratamento de erros sintáticos do PLY.
+# Ela é disparada pelo parser quando uma transição inválida é encontrada na tabela LALR.
+# Implementa regras inteligentes de recuperação de erro (panico controlado e inserção de tokens virtuais).
 def p_error(p):
+    # Tenta inspecionar a pilha de estados do parser para descobrir quais tokens eram esperados
     try:
         state = parser.statestack[-1]
         raw_expected = list(parser.action[state].keys())
     except (NameError, AttributeError, IndexError):
         raw_expected = []
 
-    # Recuperacao de ponto-e-virgula ausente.
-    # Quando a expressao ja foi reduzida e o token atual inicia outro statement,
-    # inserimos um ';' sintetico e recolocamos o token atual no lexer.
+    # --- RECUPERAÇÃO AUTOMÁTICA DE PONTO-E-VÍRGULA AUSENTE (SEMICOLON INJECTION) ---
+    # Quando o parser encontra um token que inicia um novo comando (ex: 'let', 'if', 'function')
+    # mas o estado atual esperava um ';', nós injetamos um ';' virtual.
+    # Isso impede que a falta de um ';' quebre a análise de todo o resto do arquivo.
     STATEMENT_START_TOKENS = {
         'LET', 'CONST', 'FUNCTION', 'IF', 'ELSE', 'WHILE', 'FOR', 'BREAK',
         'RETURN', 'CLASS', 'CONSOLE_LOG', 'INPUT', 'ID', 'INT_LITERAL',
@@ -614,7 +702,33 @@ def p_error(p):
     }
     if 'SEMICOLON' in raw_expected:
         buf = getattr(parser, '_buf_lexer', None)
-        if p and p.type in STATEMENT_START_TOKENS and buf:
+        
+        # Check if INCREMENT/DECREMENT is being used postfix.
+        is_postfix_error = False
+        if p and p.type in ('INCREMENT', 'DECREMENT'):
+            source_code = getattr(p.lexer, 'lexdata', '')
+            next_pos = p.lexpos + len(p.value)
+            next_char = ''
+            while next_pos < len(source_code):
+                char = source_code[next_pos]
+                if char.isspace():
+                    next_pos += 1
+                elif char == '/' and next_pos + 1 < len(source_code) and source_code[next_pos + 1] == '/':
+                    next_pos += 2
+                    while next_pos < len(source_code) and source_code[next_pos] != '\n':
+                        next_pos += 1
+                elif char == '/' and next_pos + 1 < len(source_code) and source_code[next_pos + 1] == '*':
+                    next_pos += 2
+                    while next_pos + 1 < len(source_code) and not (source_code[next_pos] == '*' and source_code[next_pos + 1] == '/'):
+                        next_pos += 1
+                    next_pos += 2
+                else:
+                    next_char = char
+                    break
+            if next_char in ('', ';', ')', ']', '}', ','):
+                is_postfix_error = True
+
+        if p and p.type in STATEMENT_START_TOKENS and not is_postfix_error and buf:
             source_code = getattr(p.lexer, 'lexdata', '')
             formatted = format_visual_error(
                 source_code,

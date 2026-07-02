@@ -180,6 +180,7 @@ class SemanticAnalyzer:
         self.check_type_compatibility(node.value, target_type, value_type, is_assignment=True)
         return target_type
 
+    #Cria uma nova tabela de símbolos para cada bloco
     def visit_BlockNode(self, node):
         self.current_scope = SymbolTable(parent=self.current_scope)
         for stmt in node.statements:

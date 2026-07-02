@@ -1,12 +1,17 @@
-"""Lexer da linguagem JSS.
+"""Lexer da linguagem JSS (JavaScript Simplificado).
 
-Responsavel por reconhecer tokens e reportar erros lexicos com linha.
+Responsável por realizar a análise léxica: ler o código-fonte caractere por
+caractere, agrupá-los em lexemas e associá-los aos seus respectivos tokens,
+além de capturar e reportar erros léxicos apontando a linha e posição exatas.
 """
 
 import ply.lex as lex
 from frontend.errors import format_visual_error
 
 
+# Dicionário de palavras reservadas da linguagem JSS.
+# Mapeia a string literal encontrada no código para o tipo de Token correspondente.
+# Isso evita que palavras-chave como 'let' ou 'if' sejam confundidas com identificadores normais.
 reserved = {
     "let": "LET",
     "const": "CONST",
@@ -75,11 +80,14 @@ tokens = [
     "DOT",
 ] + list(set(reserved.values()))
 
+# Caracteres que devem ser ignorados silenciosamente pelo lexer (espaços e tabulações).
+# Nota: Quebras de linha (\n ou \r) NÃO estão aqui, pois precisamos contá-las
+# no token t_newline para manter o rastreamento correto do número da linha.
 t_ignore = " \t"
 
 
 class LexicalError(Exception):
-    """Erro encontrado durante a analise lexica."""
+    """Exceção levantada quando um caractere ou padrão inválido é encontrado."""
 
 
 ALLOWED_STRING_ESCAPES = {
@@ -124,13 +132,20 @@ t_COMMA = r","
 t_DOT = r"\."
 
 
+# Regra para comentários de linha simples (//).
+# São ignorados fazendo "pass" (retornando None, o que avança o lexer sem gerar token).
 def t_COMMENT(t):
     r"//[^\r\n]*"
     pass
 
 
 def _collect_or_raise(t, formatted):
-    """Acumula o erro se o lexer estiver em modo de coleta; caso contrário, lança LexicalError."""
+    """Auxiliar para relatar erros léxicos.
+    
+    Se 'collect_errors' for True (ativado pelo wrapper do Parser para acumular erros),
+    salva a string formatada em uma lista interna no lexer e retorna True para o token
+    ser pulado. Caso contrário, lança a exceção imediatamente (modo padrão).
+    """
     if getattr(t.lexer, 'collect_errors', False):
         if not hasattr(t.lexer, 'errors'):
             t.lexer.errors = []
@@ -139,6 +154,9 @@ def _collect_or_raise(t, formatted):
     raise LexicalError(formatted)
 
 
+# Regra para capturar tentativas de usar comentários multilinha (/* ... */).
+# Como JSS não os suporta, nós os interceptamos aqui explicitamente para gerar
+# um erro léxico informativo em vez de falhar silenciosamente ou quebrar a sintaxe.
 def t_MULTILINE_COMMENT(t):
     r"/\*"
     formatted = format_visual_error(
@@ -218,18 +236,28 @@ def t_STRING_LITERAL(t):
     return t
 
 
+# Regra para Identificadores e Palavras Reservadas.
+# Captura qualquer nome iniciado com letra ou sublinhado (_).
+# Antes de retornar o token como ID, verificamos se o texto corresponde a uma
+# das chaves do dicionário 'reserved'. Em caso positivo, redefinimos o tipo do
+# token para a palavra-chave correspondente (ex: 'let' vira token LET).
 def t_ID(t):
     r"[A-Za-z_][A-Za-z0-9_]*"
     t.type = reserved.get(t.value, "ID")
     return t
 
 
+# Regra para contar Quebras de Linha.
+# Necessário para rastrear o número da linha corrente do código fonte para
+# exibição de mensagens de erro detalhadas e visualmente amigáveis.
 def t_newline(t):
     r"(\r\n|\r|\n)+"
     normalized = t.value.replace("\r\n", "\n").replace("\r", "\n")
     t.lexer.lineno += normalized.count("\n")
 
 
+# Tratamento padrão do PLY para caracteres desconhecidos/inválidos.
+# Disparado quando nenhum padrão regex das regras anteriores casa com a entrada.
 def t_error(t):
     formatted = format_visual_error(
         t.lexer.lexdata,
