@@ -226,6 +226,7 @@ def main():
 
         base_path, _ = os.path.splitext(input_filepath)
         llvm_filepath = base_path + ".ll"
+        asm_filepath = base_path + ".s"
         obj_filepath = base_path + ".o"
         # O backend gera executaveis nativos do Windows (PE/COFF, via ld.lld +
         # runtime do MinGW) - por isso a extensao .exe nao depende de plataforma.
@@ -260,6 +261,16 @@ def main():
             sys.exit(1)
 
         target_machine = llvm.Target.from_triple(TARGET_TRIPLE).create_target_machine(codemodel='small')
+
+        try:
+            assembly_text = target_machine.emit_assembly(binding_module)
+            with open(asm_filepath, 'w', encoding='utf-8') as f:
+                f.write(assembly_text)
+            print(f"Codigo assembly gerado com sucesso em '{asm_filepath}'.")
+        except Exception as e:
+            print(f"Erro ao gerar codigo assembly: {e}")
+            sys.exit(1)
+
         object_bytes = target_machine.emit_object(binding_module)
         with open(obj_filepath, 'wb') as f:
             f.write(object_bytes)

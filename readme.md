@@ -31,14 +31,14 @@ A execução é centralizada no arquivo `jss-compiler/src/main.py`.
 Quando executado sobre um arquivo `.jss`, o compilador:
 1. Executa as fases de Front-End (Léxico, Sintático e Semântico).
 2. Se não houver erros, constrói o módulo LLVM (via `llvmlite.ir`) e grava sua representação textual no arquivo intermediário `.ll`, para inspeção.
-3. Usa `llvmlite.binding` (a própria LLVM) para traduzir esse módulo diretamente em código objeto x86-64 nativo (`.o`) - sem invocar nenhum compilador C.
+3. Usa `llvmlite.binding` (a própria LLVM) para traduzir esse módulo em assembly textual x86-64 (`.s`) e em código objeto nativo (`.o`) - sem invocar nenhum compilador C.
 4. Invoca o linker `ld.lld` (parte do projeto LLVM, empacotado em `llvm-mingw/`) para vincular esse objeto ao runtime C do Windows e gerar o executável nativo `.exe` final.
 
 ### A. Compilando um Arquivo de Exemplo
 ```bash
 python jss-compiler/src/main.py jss-compiler/examples/teste_completo.jss
 ```
-Isto gerará `jss-compiler/examples/teste_completo.ll` e `jss-compiler/examples/teste_completo.exe`. Você pode executar o binário nativo diretamente:
+Isto gerará `jss-compiler/examples/teste_completo.ll`, `jss-compiler/examples/teste_completo.s`, `jss-compiler/examples/teste_completo.o` e `jss-compiler/examples/teste_completo.exe`. Você pode executar o binário nativo diretamente:
 ```bash
 # No Windows:
 jss-compiler/examples/teste_completo.exe
@@ -136,6 +136,7 @@ python jss-compiler/src/main.py sucesso.jss
 Analise semantica concluida com sucesso.
 Gerando codigo LLVM IR...
 Codigo LLVM IR gerado com sucesso em 'sucesso.ll'.
+Codigo assembly gerado com sucesso em 'sucesso.s'.
 Compilando executavel nativo...
 Compilacao concluida com sucesso! Executavel gerado em 'sucesso.exe'.
 ```

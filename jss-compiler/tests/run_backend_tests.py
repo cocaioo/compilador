@@ -35,6 +35,16 @@ def run_backend_test(test_name, jss_code, expected_output, input_data=None):
         print("Compilação concluída com sucesso.")
         
         # Localizar o executável gerado
+        generated_files = [
+            Path(tmpdir) / f"{test_name}.ll",
+            Path(tmpdir) / f"{test_name}.s",
+            Path(tmpdir) / f"{test_name}.o",
+        ]
+        for generated_file in generated_files:
+            if not generated_file.exists():
+                print(f"Erro: O artefato intermediario '{generated_file}' nao foi encontrado.")
+                return False
+
         exe_ext = ".exe" if os.name == 'nt' else ""
         exe_file = Path(tmpdir) / f"{test_name}{exe_ext}"
         
